@@ -77,6 +77,7 @@ class YandexMusicDownloader:
         """
         # Начальная инициализация основных полей
         config_filename = 'config.ini'
+        self.token = ''
         self.history_database_path = config.pathes['files']['history']
         self.download_folder_path = config.pathes['dirs']['download']
         self.is_rewritable = False
@@ -119,7 +120,8 @@ class YandexMusicDownloader:
 
         entry_enter_token = tkinter.Entry(labelframe_required, width=68)
         entry_enter_token.delete(0, tkinter.END)
-        entry_enter_token.insert(0, self.token)
+        if len(self.token):
+            entry_enter_token.insert(0, self.token)
         entry_enter_token.grid(column=1, row=0, columnspan=2, padx=5, pady=5)
 
         label_how_get_token = tkinter.Label(labelframe_required, text='Как получить токен?', fg='blue', cursor='hand2')
@@ -229,6 +231,7 @@ class YandexMusicDownloader:
             logger.error('Введен невалидный токен!')
             messagebox.showerror('Ошибка', 'Введенный токен невалиден!')
             self.main_window.destroy()
+            return
 
         self.playlists = self.client.users_playlists_list()
         self.liked_tracks = self.client.users_likes_tracks()
