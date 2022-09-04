@@ -12,3 +12,6 @@ pathes = {
         'default_playlist_cover': 'stuff/default_playlist_cover.jpg'
     }
 }
+
+__version__ = '0.1'
+__data__ = '04.09.2022'

@@ -1,5 +1,5 @@
 import tkinter
-from tkinter import messagebox, filedialog
+from tkinter import messagebox, filedialog, Menu
 from tkinter.ttk import Combobox, Checkbutton, Progressbar, LabelFrame
 
 import re
@@ -224,6 +224,34 @@ class YandexMusicDownloader:
         # Скачиваем все обложки всех плейлистов
         thread = threading.Thread(target=self._download_all_playlists_covers)
         thread.start()
+
+        def _about():
+            about_window = tkinter.Toplevel(self.main_window)
+            about_window.geometry('250x90')
+            about_window.title('О программе')
+            # about_window.resizable(width=False, height=False)
+
+            label_about = tkinter.Label(about_window, text=f'Версия: {config.__version__};\n'
+                                                           f'Написал laynholt в {config.__data__};\n'
+                                                           f'Репозиторий:')
+            label_about.grid(column=0, row=0, padx=20, pady=5, columnspan=2, sticky=tkinter.E)
+
+            label_git = tkinter.Label(about_window, text=f'https://github.com/Laynholt/ymd', fg='blue', cursor='hand2')
+            label_git.grid(column=0, row=1, padx=20, columnspan=2, sticky=tkinter.E)
+
+            # Обработчик гиперссылки
+            def _callback(url):
+                webbrowser.open_new(url)
+
+            label_git.bind('<Button-1>', lambda e: _callback("https://github.com/Laynholt/ymd"))
+
+        self.menu_about = Menu(self.main_window)
+        self.main_window.config(menu=self.menu_about)
+
+        self.menu_help = Menu(self.menu_about, tearoff=0)
+        self.menu_help.add_command(label='О программе', command=_about)
+
+        self.menu_about.add_cascade(label='Справка', menu=self.menu_help)
 
         current_playlist_cover = ImageTk.PhotoImage(Image.open(config.pathes['files']['default_playlist_cover']))
         self.label_playlist_cover = tkinter.Label(self.main_window, image=current_playlist_cover)
