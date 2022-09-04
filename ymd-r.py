@@ -167,6 +167,19 @@ class YandexMusicDownloader:
                                              var=check_state_rewritable)
         checkbutton_rewritable.grid(column=2, row=2, padx=5, pady=5)
 
+        # Экшен, для установки значений по умолчанию
+        def _reset_all():
+            self.token = ''
+            entry_enter_token.delete(0, tkinter.END)
+            self.history_database_path = config.pathes['files']['history']
+            self.download_folder_path = config.pathes['dirs']['download']
+            logger.debug(f'Токен установлен в [{self.token}].')
+            logger.debug(f'Путь к файлу базы данных установлен в [{self.history_database_path}].')
+            logger.debug(f'Путь к папке Загрузки установлен в [{self.download_folder_path}].')
+
+        button_reset = tkinter.Button(configuration_window, text='Сбросить всё', command=_reset_all)
+        button_reset.grid(column=0, row=4, padx=10, pady=5, sticky=tkinter.W)
+
         is_continue = tkinter.BooleanVar()
         is_continue.set(False)
 
@@ -195,7 +208,7 @@ class YandexMusicDownloader:
             configuration_window.destroy()
 
         button_continue = tkinter.Button(configuration_window, text='Продолжить', command=_continue_action)
-        button_continue.grid(column=2, row=4, padx=5, pady=5, sticky=tkinter.E)
+        button_continue.grid(column=2, row=4, padx=10, pady=5, sticky=tkinter.E)
 
         configuration_window.mainloop()
         return is_continue.get()
