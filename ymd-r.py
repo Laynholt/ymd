@@ -35,16 +35,27 @@ from yandex_music import Client, Track, TracksList
 from yandex_music.exceptions import YandexMusicError, UnauthorizedError
 
 import config
-from custom_formatter import CustomFormatter
+from custom_formatter import CustomFormatter, logger_format
 
 import logging.config
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
-ch = logging.StreamHandler()
-ch.setLevel(logging.DEBUG)
-ch.setFormatter(CustomFormatter())
-logger.addHandler(ch)
+
+
+def setup_logger(logger_type: int):
+    logger.setLevel(logging.DEBUG)
+
+    if os.path.exists(config.pathes['files']['log']):
+        os.remove(config.pathes['files']['log'])
+
+    file_handler = logging.FileHandler(config.pathes['files']['log'], encoding='utf-8')
+    file_handler.setFormatter(logging.Formatter(logger_format))
+    logger.addHandler(file_handler)
+
+    console_handler = logging.StreamHandler()
+    # console_handler.setLevel(logging.DEBUG)
+    console_handler.setFormatter(CustomFormatter())
+    logger.addHandler(console_handler)
 
 
 def strip_bad_symbols(text: str, save_comma: bool = False) -> str:
@@ -70,7 +81,7 @@ class YandexMusicDownloader:
         if self._run_configuration_window():
             self._run_main_window()
 
-    def _run_configuration_window(self) -> tkinter.BooleanVar:
+    def _run_configuration_window(self) -> bool:
         """
         Метод базовой настройки основных пармаетров загрузчика
         :return:
@@ -85,7 +96,7 @@ class YandexMusicDownloader:
         # Если существует файл конфигурации, то загружаемся с него
         if os.path.exists(config_filename) and os.path.isfile(config_filename):
             try:
-                with open(config_filename, 'r') as config_file:
+                with open(config_filename, 'r', encoding='utf-8') as config_file:
                     try:
                         data = json.load(config_file)
                         self.token = data['token']
@@ -180,8 +191,7 @@ class YandexMusicDownloader:
         button_reset = tkinter.Button(configuration_window, text='Сбросить всё', command=_reset_all)
         button_reset.grid(column=0, row=4, padx=10, pady=5, sticky=tkinter.W)
 
-        is_continue = tkinter.BooleanVar()
-        is_continue.set(False)
+        is_continue = False
 
         # Экшен, для перехода на главное окно приложения
         def _continue_action():
@@ -192,7 +202,7 @@ class YandexMusicDownloader:
             self.is_rewritable = check_state_rewritable.get()
 
             try:
-                with open(config_filename, 'w') as config_file1:
+                with open(config_filename, 'w', encoding='utf-8') as config_file1:
                     data1 = {
                         'token': self.token,
                         'history': self.history_database_path,
@@ -204,14 +214,15 @@ class YandexMusicDownloader:
                                  f'[{config_filename}].')
             except IOError:
                 logger.error(f'Не удалось открыть файл [{config_filename}] для записи!')
-            is_continue.set(True)
+            nonlocal is_continue
+            is_continue = True
             configuration_window.destroy()
 
         button_continue = tkinter.Button(configuration_window, text='Продолжить', command=_continue_action)
         button_continue.grid(column=2, row=4, padx=10, pady=5, sticky=tkinter.E)
 
         configuration_window.mainloop()
-        return is_continue.get()
+        return is_continue
 
     def _run_main_window(self):
         """
@@ -248,10 +259,10 @@ class YandexMusicDownloader:
 
         self.playlists = self.client.users_playlists_list()
         self.liked_tracks = self.client.users_likes_tracks()
-        self.downloading_playlists = {}
+        self.downloading_or_updating_playlists = {}
 
         # Создаем рабочие директории
-        self._create_working_directories()
+        self._create_stuff_directories()
 
         # Скачиваем все обложки всех плейлистов
         thread = threading.Thread(target=self._download_all_playlists_covers)
@@ -281,13 +292,22 @@ class YandexMusicDownloader:
 
             label_git.bind('<Button-1>', lambda e: _callback("https://github.com/Laynholt/ymd"))
 
-        self.menu_about = Menu(self.main_window)
-        self.main_window.config(menu=self.menu_about)
+        self.menu_main = Menu(self.main_window)
+        self.main_window.config(menu=self.menu_main)
 
-        self.menu_help = Menu(self.menu_about, tearoff=0)
+        self.menu_help = Menu(self.menu_main, tearoff=0)
         self.menu_help.add_command(label='О программе', command=_about)
 
-        self.menu_about.add_cascade(label='Справка', menu=self.menu_help)
+        self.menu_additional = Menu(self.menu_main, tearoff=0)
+        self.menu_additional.add_command(label='Обновить метаданные треков текущего плейлиста',
+                                         command=self._wrapper_update_tracks)
+        self.check_id_in_name = tkinter.BooleanVar()
+        self.check_id_in_name.set(False)
+        self.menu_additional.add_checkbutton(label='Добавить id трека в название (позволит качать одинаковые)',
+                                             onvalue=1, offvalue=0, variable=self.check_id_in_name)
+
+        self.menu_main.add_cascade(label='Дополнительно', menu=self.menu_additional)
+        self.menu_main.add_cascade(label='Справка', menu=self.menu_help)
 
         current_playlist_cover = ImageTk.PhotoImage(Image.open(config.pathes['files']['default_playlist_cover']))
         self.label_playlist_cover = tkinter.Label(self.main_window, image=current_playlist_cover)
@@ -334,7 +354,7 @@ class YandexMusicDownloader:
         self._change_current_playlist_cover()
 
         # Изменяем правило, при закрытие окна
-        def prepare_to_close_main_program():
+        def _prepare_to_close_main_program():
             self.main_thread_state = False
             messagebox.showinfo('Инфо', 'Подождите, программа завершается...')
             logger.debug('Идет завершение программы...')
@@ -343,6 +363,7 @@ class YandexMusicDownloader:
             alive_threads = threading.enumerate()
             for _thread in alive_threads:
                 if _thread is main_thread:
+                    logger.debug(f'Основной поток [{main_thread.ident}] ожидает завершения всех дочерних.')
                     continue
                 _thread_id = _thread.ident
                 logger.debug(f'Ожидание заверешния потока [{_thread_id}]')
@@ -351,17 +372,17 @@ class YandexMusicDownloader:
             logger.debug('Все потоки завершены. Завершение основного потока...')
             self.main_window.destroy()
 
-        self.main_window.protocol("WM_DELETE_WINDOW", prepare_to_close_main_program)
+        self.main_window.protocol("WM_DELETE_WINDOW", _prepare_to_close_main_program)
 
         # Создание необходимых таблиц в базе данных
         self._database_create_tables()
         self.main_window.mainloop()
 
-    def _create_working_directories(self):
+    def _create_stuff_directories(self):
         """
         Создаём нужны директории для работы:
             1) Директорию для дефолтной обложки плейлиста и её, если нет
-            2) Директорию, где будем временно хранить всё обложки плейлистов
+            2) Директорию, где будем хранить все обложки плейлистов
         :return:
         """
         # Если нет дефолного изображения альбома, то создаем его
@@ -369,18 +390,18 @@ class YandexMusicDownloader:
         if not os.path.exists(default_playlist_cover):
             img = Image.new('RGB', (100, 100), color=(73, 109, 137))
 
-            if not os.path.exists(default_playlist_cover.split('/')[0]) \
-                    or os.path.isfile(default_playlist_cover.split('/')[0]):
-                os.mkdir(default_playlist_cover.split('/')[0], mode=777)
+            stuff_directory = config.pathes['dirs']['stuff']
+            if not os.path.exists(stuff_directory) or os.path.isfile(stuff_directory):
+                os.makedirs(stuff_directory, exist_ok=True)
+                logger.debug(f'Служебная директория была содана по пути [{stuff_directory}].')
             img.save(default_playlist_cover)
             logger.debug(f'Дефолтная обложка не была найдена, поэтому была создана занова и сохранена по пути '
                          f'[{default_playlist_cover}]!')
 
         # Если папки с обложками не существует, то создаем
         if not os.path.exists(self.playlists_covers_folder_name) or os.path.isfile(self.playlists_covers_folder_name):
-            os.mkdir(self.playlists_covers_folder_name, mode=777)
-            logger.debug(f'Была создана папка [{self.playlists_covers_folder_name}] для временного хранения обложек'
-                         f' плейлистов.')
+            os.makedirs(self.playlists_covers_folder_name, exist_ok=True)
+            logger.debug(f'Была создана папка [{self.playlists_covers_folder_name}] для хранения обложек плейлистов.')
         else:
             logger.debug('Папка для обложек уже сущестует.')
 
@@ -416,9 +437,12 @@ class YandexMusicDownloader:
         if current_playlist.cover:
             if current_playlist.cover.items_uri is not None:
                 if not os.path.exists(f'{self.playlists_covers_folder_name}/{playlist_title}.jpg'):
+                    logger.debug(f'Обложка для плейлиста [{playlist_title}] не была найдена, начинаю загрузку.')
                     current_playlist.cover.download(
                         filename=f'{self.playlists_covers_folder_name}/{playlist_title}.jpg',
                         size='100x100')
+                    logger.debug(f'Обложка для плейлиста [{playlist_title}] была загружена в '
+                                 f'[{self.playlists_covers_folder_name}/{playlist_title}.jpg].')
                 filename = f'{self.playlists_covers_folder_name}/{playlist_title}.jpg'
 
         current_playlist_cover = ImageTk.PhotoImage(Image.open(filename))
@@ -435,29 +459,59 @@ class YandexMusicDownloader:
         :return:
         """
         playlist = self.playlists[self.combo_playlists.current()]
-        if playlist.kind not in self.downloading_playlists:
+        if playlist.kind not in self.downloading_or_updating_playlists:
             if playlist.track_count == 0:
                 messagebox.showinfo('Инфо', 'Данный плейлист пуст!')
                 return
 
-            thread = threading.Thread(target=self._download_all_tracks, args=(
-                self.combo_playlists.current(), self.check_state_history.get(),))
+            thread = threading.Thread(target=self._download_or_update_all_tracks, args=(
+                self.combo_playlists.current(), self.check_state_history.get(), False,))
             logger.debug(f'Создаю новый поток для скачивания плейлиста [{playlist.title}]')
             thread.start()
         else:
-            logger.debug(f'Загрузка плейлиста {playlist.title} уже производится!')
+            logger.debug(f'Загрузка плейлиста {playlist.title} или обновление метаданных его треков'
+                         f' уже производится на данный момент!')
+            messagebox.showinfo('Инфо', f'Подождите, загрузка плейлиста {playlist.title} или обновление метаданных его'
+                                        f' треков уже производится на данный момент!')
 
-    def _download_all_tracks(self, playlist_index: int, download_only_new: bool):
+    def _wrapper_update_tracks(self):
         """
-        Метод для скачивания всех композиций из выбранного плейлиста
+        Обработчик, который вызывается при нажатии на кнопку обновить
+        :return:
+        """
+        playlist = self.playlists[self.combo_playlists.current()]
+        if playlist.kind not in self.downloading_or_updating_playlists:
+            if playlist.track_count == 0:
+                messagebox.showinfo('Инфо', 'Данный плейлист пуст!')
+                return
+
+            thread = threading.Thread(target=self._download_or_update_all_tracks, args=(
+                self.combo_playlists.current(), self.check_state_history.get(), True,))
+            logger.debug(f'Создаю новый поток для обновления метаданных треков плейлиста [{playlist.title}]')
+            thread.start()
+        else:
+            logger.debug(f'Загрузка плейлиста {playlist.title} или обновление метаданных его треков'
+                         f' уже производится на данный момент!')
+            messagebox.showinfo('Инфо', f'Подождите, загрузка плейлиста {playlist.title} или обновление метаданных его'
+                                        f' треков уже производится на данный момент!')
+
+    def _download_or_update_all_tracks(self, playlist_index: int, download_only_new: bool, update_mode: bool):
+        """
+        Метод для скачивания или обновления метаданных всех композиций из выбранного плейлиста
         :param playlist_index: номер плейлиста в комбобоксе
         :param download_only_new: флаг на скачивания только новых композиций (чекбокс)
+        :param update_mode: флаг обновления метаданных треков
         :return:
         """
         # Создаем дочернее окно для визуализации прогресса скачивания
 
         playlist = self.playlists[playlist_index]
-        logger.debug(f'Поток [{threading.get_ident()}] для скачивания плейлиста [{playlist.title}] был создан!')
+        if not update_mode:
+            logger.debug(f'Поток [{threading.get_ident()}] для скачивания плейлиста [{playlist.title}] был создан!')
+        else:
+            logger.debug(f'Поток [{threading.get_ident()}] для обновления метаданных треков для '
+                         f'плейлиста [{playlist.title}] был создан!')
+        child_thread_state = True
         try:
             child_window = tkinter.Toplevel(self.main_window)
             child_window.geometry('300x100')
@@ -471,10 +525,11 @@ class YandexMusicDownloader:
             progress_bar = Progressbar(child_window, orient='horizontal', mode='determinate', length=280)
             progress_bar.grid(column=0, row=0, columnspan=2, padx=10, pady=20)
 
-            label_value = tkinter.Label(child_window, text=f'Прогресс скачивания: {0 / playlist.track_count} [0 %]')
+            info = "скачивания" if not update_mode else "обновления"
+            label_value = tkinter.Label(child_window, text=f'Прогресс {info}: {0 / playlist.track_count} [0 %]')
             label_value.grid(column=0, row=1, columnspan=2)
 
-            # Код для закачки файлов
+            # Код для закачки и обновления файлов
             current_playlist = self.client.users_playlists(kind=playlist.kind)
             playlist_title = strip_bad_symbols(current_playlist.title)
 
@@ -499,17 +554,18 @@ class YandexMusicDownloader:
                     logger.debug(f'Директория [{download_folder_path}/info] была создана.')
                 os.makedirs(f'{download_folder_path}/info', exist_ok=True)
 
-                filename = {
-                    'e': f'{download_folder_path}/info/download_errors-{playlist_title}.txt',
-                    'd': f'{download_folder_path}/info/downloaded_tracks-{playlist_title}.txt'
-                }
-                with open(filename['e'], 'w', encoding='utf-8') as file:
-                    pass
-                with open(filename['d'], 'w', encoding='utf-8') as file:
-                    pass
+                if not update_mode:
+                    filename = {
+                        'e': f'{download_folder_path}/info/download_errors-{playlist_title}.txt',
+                        'd': f'{download_folder_path}/info/downloaded_tracks-{playlist_title}.txt'
+                    }
+                    with open(filename['e'], 'w', encoding='utf-8') as file:
+                        pass
+                    with open(filename['d'], 'w', encoding='utf-8') as file:
+                        pass
 
                 # Добавляем в словарь номер плейлиста и его обработчик
-                self.downloading_playlists.update({playlist.kind: self.DownloaderHelper(
+                self.downloading_or_updating_playlists.update({playlist.kind: self.DownloaderHelper(
                     progress_bar=progress_bar,
                     label_value=label_value,
                     download_folder_path=download_folder_path,
@@ -520,22 +576,31 @@ class YandexMusicDownloader:
                     playlist_title=playlist_title,
                     number_tracks_in_playlist=playlist.track_count,
                     liked_tracks=self.liked_tracks,
-                    main_thread_state=lambda: self.main_thread_state
+                    main_thread_state=lambda: self.main_thread_state,
+                    child_thread_state=lambda: child_thread_state,
+                    update_mode=update_mode
                 )})
 
-                messagebox.showinfo('Инфо', f'Загрузка треков плейлиста [{current_playlist.title}] начата!')
+                info = "Загрузка" if not update_mode else "Обновление метаданных"
+                messagebox.showinfo('Инфо', f'{info} треков плейлиста [{current_playlist.title}] начата!')
 
                 queue = Queue()
                 workers = []
 
                 for x in range(self.number_of_workers):
-                    workers.append(self.DownloaderWorker(queue, self.downloading_playlists[playlist.kind]))
+                    workers.append(self.DownloaderWorker(queue, self.downloading_or_updating_playlists[playlist.kind]))
                     workers[x].daemon = True
                     workers[x].start()
 
-                def close_program():
-                    messagebox.showinfo('Инфо', 'Подождите, окно закроется по завершению загрузки скачиваемых '
-                                                'на данный момент треков.')
+                def _close_program():
+                    nonlocal child_thread_state
+                    child_thread_state = False
+                    if not update_mode:
+                        messagebox.showinfo('Инфо', 'Подождите, окно закроется по завершению загрузки скачиваемых '
+                                                    'на данный момент треков.')
+                    else:
+                        messagebox.showinfo('Инфо', 'Подождите, окно закроется по завершению обновления метаданных '
+                                                    'текущих треков.')
                     for _worker in workers:
                         logger.debug(f'Поток [{_worker.ident}] был поставлен на завершение.')
                         _worker.is_finished = True
@@ -546,7 +611,7 @@ class YandexMusicDownloader:
                         logger.debug(f'Поток [{_worker_id}] был завершён.')
                     child_window.destroy()
 
-                child_window.protocol("WM_DELETE_WINDOW", close_program)
+                child_window.protocol("WM_DELETE_WINDOW", _close_program)
 
                 logger.debug(f'Начало добавления треков в очередь на выполнения для плейлиста [{playlist_title}].')
                 for i in range(math.ceil(current_playlist.track_count / self.chunk_of_tracks)):
@@ -566,11 +631,22 @@ class YandexMusicDownloader:
                         logger.debug('Основное окно получило сигнал на завершение, начинаю подготовку '
                                      'к прекращению работы.')
                         break
+
+                    if not child_thread_state:
+                        logger.debug('Окно загрузки получило сигнал на завершение, начинаю подготовку '
+                                     'к прекращению работы.')
+                        break
                 else:
-                    logger.debug(f'Загружка треков для плейлиста '
-                                 f'[{playlist_title}] завершена. Загружено '
-                                 f'[{self.downloading_playlists[playlist.kind].analyzed_and_downloaded_tracks["d"]}]'
-                                 f' трека(ов).')
+                    if not update_mode:
+                        logger.debug(f'Загружка треков для плейлиста '
+                                     f'[{playlist_title}] завершена. Загружено '
+                                     f'[{self.downloading_or_updating_playlists[playlist.kind].analyzed_and_downloaded_tracks["d"]}]'
+                                     f' трека(ов).')
+                    else:
+                        logger.debug(f'Обновление метаданных для треков для плейлиста '
+                                     f'[{playlist_title}] завершено. Обновлено '
+                                     f'[{self.downloading_or_updating_playlists[playlist.kind].analyzed_and_downloaded_tracks["u"]}]'
+                                     f' трека(ов).')
 
                 for worker in workers:
                     logger.debug(f'Поток [{worker.ident}] был поставлен на завершение.')
@@ -581,27 +657,35 @@ class YandexMusicDownloader:
                     worker.join()
                     logger.debug(f'Поток [{worker_id}] был завершён.')
 
-                if not self.main_thread_state:
+                if not self.main_thread_state or not child_thread_state:
                     logger.debug('Завершаю работу.')
-                    return
-
-                if self.downloading_playlists[playlist.kind].analyzed_and_downloaded_tracks['d'] > 0:
-                    messagebox.showinfo('Инфо', f'Загрузка треков плейлиста [{current_playlist.title}] закончена!\n'
-                                                f'Загружено [{self.downloading_playlists[playlist.kind].analyzed_and_downloaded_tracks["d"]}] трека(ов).')
                 else:
-                    messagebox.showinfo('Инфо', f'В плейлисте [{current_playlist.title}] нет новых треков!\n\n'
-                                                f'Если хотите скачать треки, то уберите глалочку с пункта "Скачать новые треки".')
+                    if not update_mode:
+                        if self.downloading_or_updating_playlists[playlist.kind].analyzed_and_downloaded_tracks['d'] > 0:
+                            messagebox.showinfo('Инфо', f'Загрузка треков плейлиста [{current_playlist.title}] закончена!\n'
+                                                        f'Загружено [{self.downloading_or_updating_playlists[playlist.kind].analyzed_and_downloaded_tracks["d"]}] трека(ов).')
+                        else:
+                            messagebox.showinfo('Инфо', f'В плейлисте [{current_playlist.title}] нет новых треков!\n\n'
+                                                        f'Если хотите скачать треки, то уберите глалочку с пункта "Скачать новые треки".')
+                    else:
+                        if self.downloading_or_updating_playlists[playlist.kind].analyzed_and_downloaded_tracks['u'] > 0:
+                            messagebox.showinfo('Инфо', f'Обновление треков плейлиста [{current_playlist.title}] закончено!\n'
+                                                        f'Обновлено [{self.downloading_or_updating_playlists[playlist.kind].analyzed_and_downloaded_tracks["u"]}] трека(ов).')
+                        else:
+                            messagebox.showinfo('Инфо', f'На диске не найдено подходящих треков из плеейлиста [{current_playlist.title}] для обновления!\n\n'
+                                                        f'Попробуйте сначала скачать данный плейлист.')
 
             except IOError:
                 messagebox.showwarning('Предупреждение', f'Не удалось создать файл [{filename}] для записи ошибок при '
                                                          f'скачивании!')
                 logger.error(f'Ошибка при попытке создания файла [{filename}] для записи ошибок при скачивании!')
 
+            info = "скачиваемых" if not update_mode else "обновляемых"
             try:
-                del self.downloading_playlists[playlist.kind]
-                logger.debug(f'Плейлист [{playlist_title}] был удалён из списка скачиваемых плейлистов.')
+                del self.downloading_or_updating_playlists[playlist.kind]
+                logger.debug(f'Плейлист [{playlist_title}] был удалён из списка {info} плейлистов.')
             except ValueError:
-                logger.error(f'Не удалось удалить плейлист [{playlist_title}] из списка скачиваемых плейлистов.')
+                logger.error(f'Не удалось удалить плейлист [{playlist_title}] из списка {info} плейлистов.')
 
         except Exception:
             pass
@@ -635,7 +719,8 @@ class YandexMusicDownloader:
     class DownloaderHelper:
         def __init__(self, progress_bar: Progressbar, label_value: tkinter.Label, download_folder_path: str,
                      history_database_path: str, is_rewritable: bool, download_only_new: bool, filenames: dict,
-                     playlist_title: str, number_tracks_in_playlist: int, liked_tracks: TracksList, main_thread_state):
+                     playlist_title: str, number_tracks_in_playlist: int, liked_tracks: TracksList, main_thread_state,
+                     child_thread_state, update_mode):
             self.progress_bar = progress_bar
             self.label_value = label_value
             self.download_folder_path = download_folder_path
@@ -647,10 +732,12 @@ class YandexMusicDownloader:
             self.number_tracks_in_playlist = number_tracks_in_playlist
             self.liked_tracks = liked_tracks
             self.main_thread_state = main_thread_state
+            self.child_thread_state = child_thread_state
+            self.update_mode = update_mode
 
             self.is_downloading_finished = False
             self.mutex = threading.Lock()
-            self.analyzed_and_downloaded_tracks = {'a': 0, 'd': 0}
+            self.analyzed_and_downloaded_tracks = {'a': 0, 'd': 0, 'u': 0}
 
         def change_progress_bar_state(self, download_state: str = ''):
             """
@@ -688,46 +775,36 @@ class YandexMusicDownloader:
             :return:
             """
             try:
-                if self.download_only_new:
-                    if not self.main_thread_state():
-                        logger.debug('Основное окно получило сигнал на завершение, начинаю подготовку '
-                                     'к прекращению работы.')
-                        return
+                track_artists = ', '.join(i['name'] for i in track.artists)
+                track_title = track.title + ("" if track.version is None else f' ({track.version})')
 
+                if not self.main_thread_state() or not self.child_thread_state():
+                    logger.debug('Основное окно или окно загрузки получило сигнал на завершение, начинаю подготовку '
+                                 'к прекращению работы.')
+                    return
+
+                if self.download_only_new:
                     self.mutex.acquire()
                     return_value = self._is_track_in_database(track=track)
                     self.mutex.release()
 
-                    track_artists = ', '.join(i['name'] for i in track.artists)
                     if return_value:
-                        if not self.main_thread_state():
-                            logger.debug('Основное окно получило сигнал на завершение, начинаю подготовку '
-                                         'к прекращению работы.')
-                            return
-
                         self.mutex.acquire()
                         self.analyzed_and_downloaded_tracks["a"] += 1
                         self.mutex.release()
 
-                        logger.debug(f'Трек [{track_artists} - {track.title}] уже существует в базе '
+                        logger.debug(f'Трек [{track_artists} - {track_title}] уже существует в базе '
                                      f'[{self.history_database_path}]. Так как включён мод ONLY_NEW, выхожу.')
                         return
                     else:
-                        logger.debug(f'Трека [{track_artists} - {track.title}] нет в базе '
+                        logger.debug(f'Трека [{track_artists} - {track_title}] нет в базе '
                                      f'[{self.history_database_path}]. Подготавливаюсь к его загрузки.')
 
-                track_artists = ', '.join(i['name'] for i in track.artists)
-                track_name = strip_bad_symbols(f"{track_artists} - {track.title}", save_comma=True)
-
+                track_name = strip_bad_symbols(f"{track_artists} - {track_title}", save_comma=True)
                 if not track.available:
-                    if not self.main_thread_state():
-                        logger.debug('Основное окно получило сигнал на завершение, начинаю подготовку '
-                                     'к прекращению работы.')
-                        return
-
-                    logger.debug(f'Трек [{track_name}] недоступен.')
+                    logger.error(f'Трек [{track_name}] недоступен.')
                     self.mutex.acquire()
-                    with open(self.filenames['e'], 'a') as file:
+                    with open(self.filenames['e'], 'a', encoding='utf-8') as file:
                         file.write(f"{track_name} - Трек недоступен\n")
                     self.analyzed_and_downloaded_tracks["a"] += 1
                     self.mutex.release()
@@ -738,28 +815,41 @@ class YandexMusicDownloader:
                 for info in sorted(track.get_download_info(), key=lambda x: x['bitrate_in_kbps'], reverse=True):
                     codec = info.codec
                     bitrate = info.bitrate_in_kbps
-                    full_track_name = f'{self.download_folder_path}/{track_name}.{codec}'
+                    full_track_name = os.path.abspath(f'{self.download_folder_path}/{track_name}.{codec}')
 
-                    # Если трек существует и мы не перезаписываем, то выходим
+                    # Если трек существует и мы не перезаписываем, то выходим, но скачала проеверяем, есть ли он в базе
                     if os.path.exists(f'{full_track_name}') and not self.is_rewritable:
-                        if not self.main_thread_state():
-                            logger.debug('Основное окно получило сигнал на завершение, начинаю подготовку '
-                                         'к прекращению работы.')
+                        if not self.main_thread_state() or not self.child_thread_state():
+                            logger.debug('Основное окно или окно загрузки получило сигнал на завершение, '
+                                         'начинаю подготовку к прекращению работы.')
                             return
 
-                        logger.debug(f'Трек [{track_name}] уже существует в базе '
-                                     f'[{self.history_database_path}]. Так как отключена перезапись, выхожу.')
+                        logger.debug(f'Трек [{track_name}] уже существует на диске '
+                                     f'[{self.download_folder_path}]. Проверяю в базе.')
                         self.mutex.acquire()
-                        with open(self.filenames['e'], 'a') as file:
+                        if self._is_track_in_database(track):
+                            logger.debug(f'Трек [{track_name}] уже существует в базе '
+                                         f'[{self.history_database_path}]. Так как отключена перезапись, выхожу.')
+                        else:
+                            logger.debug(f'Трек [{track_name}] отсутствует в базе '
+                                         f'[{self.history_database_path}]. Так как отключена перезапись, просто '
+                                         f'добавляю его в базу и выхожу.')
+                            self._add_track_to_database(track=track, codec=codec, bit_rate=bitrate,
+                                                        is_favorite=self._is_track_liked(track.id))
+                            logger.debug(
+                                f'Трек [{track_name}] был добавлен в базу данных [{self.history_database_path}].')
+                        self.mutex.release()
+                        self.mutex.acquire()
+                        with open(self.filenames['e'], 'a', encoding='utf-8') as file:
                             file.write(f"{track_name} - Трек уже существует\n")
                         self.mutex.release()
                         track_exists = True
                         break
 
                     try:
-                        if not self.main_thread_state():
-                            logger.debug('Основное окно получило сигнал на завершение, начинаю подготовку '
-                                         'к прекращению работы.')
+                        if not self.main_thread_state() or not self.child_thread_state():
+                            logger.debug('Основное окно или окно загрузки получило сигнал на завершение, '
+                                         'начинаю подготовку к прекращению работы.')
                             return
 
                         logger.debug(f'Начинаю загрузку трека [{track_name}].')
@@ -767,29 +857,33 @@ class YandexMusicDownloader:
                         logger.debug(f'Трек [{track_name}] был скачан.')
 
                         self.mutex.acquire()
-                        with open(f'{self.filenames["d"]}', 'a') as file:
+                        with open(f'{self.filenames["d"]}', 'a', encoding='utf-8') as file:
                             file.write(f'{self.analyzed_and_downloaded_tracks["d"]}] {track_name}\n')
                         self.mutex.release()
 
-                        cover_filename = f'{self.download_folder_path}/covers/{track_name}.jpg'
+                        cover_filename = os.path.abspath(f'{self.download_folder_path}/covers/{track_name}.jpg')
                         track.download_cover(cover_filename, size="300x300")
                         logger.debug(f'Обложка для трека [{track_name}] была скачана в [{cover_filename}].')
 
-                        file = File(f'{full_track_name}')
-                        file.update({
-                            # Title
-                            'TIT2': TIT2(encoding=3, text=track.title),
-                            # Artist
-                            'TPE1': TPE1(encoding=3, text=', '.join(i['name'] for i in track.artists)),
-                            # Album
-                            'TALB': TALB(encoding=3, text=', '.join(i['title'] for i in track.albums)),
-                            # Year
-                            'TDRC': TDRC(encoding=3, text=str(track.albums[0]['year'])),
-                            # Picture
-                            'APIC': APIC(encoding=3, text=cover_filename, data=open(cover_filename, 'rb').read())
-                        })
-                        file.save()
-                        logger.debug(f'Данные трека [{track_name}] были обновлены.')
+                        try:
+                            file = File(full_track_name)
+                            with open(cover_filename, 'rb') as cover_file:
+                                file.update({
+                                    # Title
+                                    'TIT2': TIT2(encoding=3, text=track_title),
+                                    # Artist
+                                    'TPE1': TPE1(encoding=3, text=', '.join(i['name'] for i in track.artists)),
+                                    # Album
+                                    'TALB': TALB(encoding=3, text=', '.join(i['title'] for i in track.albums)),
+                                    # Year
+                                    'TDRC': TDRC(encoding=3, text=str(track.albums[0]['year'])),
+                                    # Picture
+                                    'APIC': APIC(encoding=3, text=cover_filename, data=cover_file.read())
+                                })
+                            file.save()
+                            logger.debug(f'Метаданные трека [{track_name}] были обновлены.')
+                        except AttributeError:
+                            logger.error(f'Не удалось обновить метаданные для файла [{full_track_name}].')
 
                         self.mutex.acquire()
                         if not self._is_track_in_database(track=track):
@@ -812,10 +906,10 @@ class YandexMusicDownloader:
 
                 if not was_track_downloaded:
                     if not track_exists:
-                        logger.debug(f'Не удалось скачать трек [{track_name}].')
+                        logger.error(f'Не удалось скачать трек [{track_name}].')
                         self.mutex.acquire()
-                        with open(self.filenames['e'], 'a') as file:
-                            file.write(f"{track.artists[0].name} - {track.title} - Не удалось скачать трек\n")
+                        with open(self.filenames['e'], 'a', encoding='utf-8') as file:
+                            file.write(f"{track.artists[0].name} - {track_title} - Не удалось скачать трек\n")
                         self.mutex.release()
 
                 self.mutex.acquire()
@@ -835,7 +929,8 @@ class YandexMusicDownloader:
             _playlist_name = f'table_{_playlist_name}'
 
             track_artists = ', '.join(i['name'] for i in track.artists)
-            logger.debug(f'Ищу трек [{track_artists} - {track.title}] в базе [{self.history_database_path}].')
+            track_title = track.title + ("" if track.version is None else f' ({track.version})')
+            logger.debug(f'Ищу трек [{track_artists} - {track_title}] в базе [{self.history_database_path}].')
 
             with sqlite3.connect(self.history_database_path) as con:
                 cursor = con.cursor()
@@ -856,7 +951,8 @@ class YandexMusicDownloader:
             _playlist_name = f'table_{_playlist_name}'
 
             track_artists = ', '.join(i['name'] for i in track.artists)
-            logger.debug(f'Добавляю трек [{track_artists} - {track.title}] в базу [{self.history_database_path}].')
+            track_title = track.title + ("" if track.version is None else f' ({track.version})')
+            logger.debug(f'Добавляю трек [{track_artists} - {track_title}] в базу [{self.history_database_path}].')
 
             con = None
             metadata = []
@@ -871,7 +967,7 @@ class YandexMusicDownloader:
                 track_id = track.id
                 artist_id = ', '.join(str(i.id) for i in track.artists)
                 album_id = ', '.join(str(i.id) for i in track.albums)
-                track_name = track.title
+                track_name = track_title
                 artist_name = track_artists
                 album_name = ', '.join(i.title for i in track.albums)
                 genre = track.albums[0].genre
@@ -893,6 +989,60 @@ class YandexMusicDownloader:
                 if con is not None:
                     con.close()
 
+        def update_track_metadata(self, track: Track):
+            """
+            Обновляет метаданные трека
+            :param track: текущий трек
+            :return:
+            """
+            track_artists = ', '.join(i['name'] for i in track.artists)
+            track_title = track.title + ("" if track.version is None else f' ({track.version})')
+            track_name = strip_bad_symbols(f"{track_artists} - {track_title}", save_comma=True)
+
+            if not self.main_thread_state() or not self.child_thread_state():
+                logger.debug('Основное окно или окно загрузки получило сигнал на завершение, начинаю подготовку '
+                             'к прекращению работы.')
+                return
+
+            for info in sorted(track.get_download_info(), key=lambda x: x['bitrate_in_kbps'], reverse=True):
+                codec = info.codec
+                bitrate = info.bitrate_in_kbps
+                full_track_name = os.path.abspath(f'{self.download_folder_path}/{track_name}.{codec}')
+
+                # Если трек существует и мы не перезаписываем, то выходим, но скачала проеверяем, есть ли он в базе
+                if os.path.exists(f'{full_track_name}'):
+                    logger.debug(f'Трек [{track_name}] присутствует на диске '
+                                 f'[{self.download_folder_path}]. Пытаюсь обновить метаданные.')
+
+                    cover_filename = os.path.abspath(f'{self.download_folder_path}/covers/{track_name}.jpg')
+                    if not os.path.exists(cover_filename):
+                        logger.debug(f'Обложка для трека [{track_name}] не найдена, начинаю загрузку.')
+                        track.download_cover(cover_filename, size="300x300")
+                        logger.debug(f'Обложка для трека [{track_name}] была скачана в [{cover_filename}].')
+                    try:
+                        file = File(full_track_name)
+                        with open(cover_filename, 'rb') as cover_file:
+                            file.update({
+                                # Title
+                                'TIT2': TIT2(encoding=3, text=track_title),
+                                # Artist
+                                'TPE1': TPE1(encoding=3, text=', '.join(i['name'] for i in track.artists)),
+                                # Album
+                                'TALB': TALB(encoding=3, text=', '.join(i['title'] for i in track.albums)),
+                                # Year
+                                'TDRC': TDRC(encoding=3, text=str(track.albums[0]['year'])),
+                                # Picture
+                                'APIC': APIC(encoding=3, text=cover_filename, data=cover_file.read())
+                            })
+                        file.save()
+                        logger.debug(f'Метаданные трека [{track_name}] были обновлены.')
+                    except AttributeError:
+                        logger.error(f'Не удалось обновить метаданные для файла [{full_track_name}].')
+
+                    self.analyzed_and_downloaded_tracks['u'] += 1
+                    break
+            self.analyzed_and_downloaded_tracks['a'] += 1
+
         def _update_track_name(self, track: Track):
             """
             Изменяет названия треков, как в базе данных, так и в проводнике
@@ -900,8 +1050,9 @@ class YandexMusicDownloader:
             :return:
             """
             track_artists = ', '.join(i['name'] for i in track.artists)
-            old_track_name = strip_bad_symbols(f"{track_artists} - {track.title}")
-            new_track_name = strip_bad_symbols(f"{track_artists} - {track.title}", save_comma=True)
+            track_title = track.title + ("" if track.version is None else f' ({track.version})')
+            old_track_name = strip_bad_symbols(f"{track_artists} - {track_title}")
+            new_track_name = strip_bad_symbols(f"{track_artists} - {track_title}", save_comma=True)
 
             if os.path.exists(f'{self.download_folder_path}/{old_track_name}.mp3'):
                 try:
@@ -913,37 +1064,6 @@ class YandexMusicDownloader:
                     self.mutex.release()
                 except Exception:
                     logger.error(f'Не удалось переименовать файл [{old_track_name}] в [{new_track_name}].')
-
-            # self.mutex.acquire()
-            # if self._is_track_in_database(track=track):
-            #     _playlist_name = self.playlist_title.replace(' ', '_')
-            #     _playlist_name = f'table_{_playlist_name}'
-            #
-            #     old_artist_name = strip_bad_symbols(track_artists)
-            #     new_artist_name = strip_bad_symbols(track_artists, save_comma=True)
-            #
-            #     logger.debug(f'Пытаюсь переименовать имя исполнителя [{old_artist_name}] в базе данных '
-            #                  f'[{self.history_database_path}].')
-            #
-            #     con = None
-            #     try:
-            #         con = sqlite3.connect(self.history_database_path)
-            #         cursor = con.cursor()
-            #         request = f"UPDATE {_playlist_name} SET artist_name={new_artist_name} WHERE track_id == {track.id};"
-            #         cursor.execute(request)
-            #         con.commit()
-            #         logger.debug(f'Файл успешно изменен из [{old_artist_name}] в [{new_artist_name}] в базе данных'
-            #                      f' [{self.history_database_path}].')
-            #
-            #     except sqlite3.Error:
-            #         logger.error(f'Не удалось обновить название трека из [{old_artist_name}] в [{new_artist_name}]'
-            #                      f' в базе данных [{self.history_database_path}].')
-            #         if con is not None:
-            #             con.rollback()
-            #     finally:
-            #         if con is not None:
-            #             con.close()
-            # self.mutex.release()
 
     class DownloaderWorker(threading.Thread):
         def __init__(self, queue: Queue, helper):
@@ -965,23 +1085,29 @@ class YandexMusicDownloader:
                     continue
 
                 try:
-                    if not self.helper.main_thread_state:
+                    if not self.helper.main_thread_state() or not self.helper.child_thread_state() or self.is_finished:
                         break
 
                     track_artists = ', '.join(i['name'] for i in track.artists)
-                    # logger.debug(f'Подготовка к началу обновления трека [{track_artists} - {track.title}].')
+                    track_title = track.title + ("" if track.version is None else f' ({track.version})')
+                    # logger.debug(f'Подготовка к началу обновления трека [{track_artists} - {track_title}].')
                     # self.helper._update_track_name(track)
-                    # logger.debug(f'Обновление трека [{track_artists} - {track.title}] завершено.')
+                    # logger.debug(f'Обновление трека [{track_artists} - {track_title}] завершено.')
 
-                    logger.debug(f'Подготовка к началу загрузки трека [{track_artists} - {track.title}].')
-                    self.helper.download_track(track)
-                    logger.debug(f'Загружка трека [{track_artists} - {track.title}] завершена.')
+                    if not self.helper.update_mode:
+                        logger.debug(f'Подготовка к началу загрузки трека [{track_artists} - {track_title}].')
+                        self.helper.download_track(track)
+                        logger.debug(f'Загрузка трека [{track_artists} - {track_title}] завершена.')
+                    else:
+                        logger.debug(f'Подготовка к началу обновления трека [{track_artists} - {track_title}].')
+                        self.helper.update_track_metadata(track)
+                        logger.debug(f'Обновление трека [{track_artists} - {track_title}] завершено.')
 
-                    if not self.helper.main_thread_state() or self.is_finished:
+                    if not self.helper.main_thread_state() or not self.helper.child_thread_state() or self.is_finished:
                         break
 
                     self.helper.change_progress_bar_state()
-                    logger.debug(f'Програсс бар с учётом трека [{track.artists[0].name} - {track.title}] изменён.')
+                    logger.debug(f'Програсс бар с учётом трека [{track.artists[0].name} - {track_title}] изменён.')
 
                 finally:
                     self.queue.task_done()
@@ -996,6 +1122,7 @@ class YandexMusicDownloader:
 
 
 def main():
+    setup_logger(logging.ERROR)
     downloader = YandexMusicDownloader()
     downloader.start()
 

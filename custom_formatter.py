@@ -16,6 +16,8 @@ limitations under the License.
 
 import logging
 
+logger_format = '[%(levelname)s: [%(thread)d] - %(asctime)s] %(message)s'
+
 
 class CustomFormatter(logging.Formatter):
     green = "\x1b[32m"
@@ -24,14 +26,13 @@ class CustomFormatter(logging.Formatter):
     red = "\x1b[31;20m"
     bold_red = "\x1b[31;1m"
     reset = "\x1b[0m"
-    format = '[%(levelname)s: [%(thread)d] - %(asctime)s] %(message)s'
 
     FORMATS = {
-        logging.DEBUG: green + format + reset,
-        logging.INFO: grey + format + reset,
-        logging.WARNING: yellow + format + reset,
-        logging.ERROR: red + format + reset,
-        logging.CRITICAL: bold_red + format + reset
+        logging.DEBUG: green + logger_format + reset,
+        logging.INFO: grey + logger_format + reset,
+        logging.WARNING: yellow + logger_format + reset,
+        logging.ERROR: red + logger_format + reset,
+        logging.CRITICAL: bold_red + logger_format + reset
     }
 
     def format(self, record):

@@ -1,7 +1,9 @@
 *.ini
+*.log
 *.db
 .idea/
 playlists_covers/
+download/
 share/
 
 # Created by .ignore support plugin (hsz.mobi)
