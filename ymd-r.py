@@ -486,8 +486,19 @@ class YandexMusicDownloader:
                     logger.debug(f'Директория [{download_folder_path}/covers] была создана.')
                 os.makedirs(f'{download_folder_path}/covers', exist_ok=True)
 
-                filename = f'{download_folder_path}/download_errors-{playlist_title}.txt'
-                with open(filename, 'w', encoding='utf-8') as file:
+                if os.path.exists(f'{download_folder_path}/info'):
+                    logger.debug(f'Директория [{download_folder_path}/info] уже существует.')
+                else:
+                    logger.debug(f'Директория [{download_folder_path}/info] была создана.')
+                os.makedirs(f'{download_folder_path}/info', exist_ok=True)
+
+                filename = {
+                    'e': f'{download_folder_path}/info/download_errors-{playlist_title}.txt',
+                    'd': f'{download_folder_path}/info/downloaded_tracks-{playlist_title}.txt'
+                }
+                with open(filename['e'], 'w', encoding='utf-8') as file:
+                    pass
+                with open(filename['d'], 'w', encoding='utf-8') as file:
                     pass
 
                 # Добавляем в словарь номер плейлиста и его обработчик
@@ -498,7 +509,7 @@ class YandexMusicDownloader:
                     history_database_path=self.history_database_path,
                     is_rewritable=self.is_rewritable,
                     download_only_new=download_only_new,
-                    error_filename=filename,
+                    filenames=filename,
                     playlist_title=playlist_title,
                     number_tracks_in_playlist=playlist.track_count,
                     liked_tracks=self.liked_tracks,
@@ -616,7 +627,7 @@ class YandexMusicDownloader:
 
     class DownloaderHelper:
         def __init__(self, progress_bar: Progressbar, label_value: tkinter.Label, download_folder_path: str,
-                     history_database_path: str, is_rewritable: bool, download_only_new: bool, error_filename: str,
+                     history_database_path: str, is_rewritable: bool, download_only_new: bool, filenames: dict,
                      playlist_title: str, number_tracks_in_playlist: int, liked_tracks: TracksList, main_thread_state):
             self.progress_bar = progress_bar
             self.label_value = label_value
@@ -624,7 +635,7 @@ class YandexMusicDownloader:
             self.history_database_path = history_database_path
             self.is_rewritable = is_rewritable
             self.download_only_new = download_only_new
-            self.filename = error_filename
+            self.filenames = filenames
             self.playlist_title = playlist_title
             self.number_tracks_in_playlist = number_tracks_in_playlist
             self.liked_tracks = liked_tracks
@@ -709,7 +720,7 @@ class YandexMusicDownloader:
 
                     logger.debug(f'Трек [{track_name}] недоступен.')
                     self.mutex.acquire()
-                    with open(self.filename, 'a') as file:
+                    with open(self.filenames['e'], 'a') as file:
                         file.write(f"{track_name} - Трек недоступен\n")
                     self.analyzed_and_downloaded_tracks["a"] += 1
                     self.mutex.release()
@@ -732,7 +743,7 @@ class YandexMusicDownloader:
                         logger.debug(f'Трек [{track_name}] уже существует в базе '
                                      f'[{self.history_database_path}]. Так как отключена перезапись, выхожу.')
                         self.mutex.acquire()
-                        with open(self.filename, 'a') as file:
+                        with open(self.filenames['e'], 'a') as file:
                             file.write(f"{track_name} - Трек уже существует\n")
                         self.mutex.release()
                         track_exists = True
@@ -747,6 +758,11 @@ class YandexMusicDownloader:
                         logger.debug(f'Начинаю загрузку трека [{track_name}].')
                         track.download(filename=full_track_name, codec=codec, bitrate_in_kbps=bitrate)
                         logger.debug(f'Трек [{track_name}] был скачан.')
+
+                        self.mutex.acquire()
+                        with open(f'{self.filenames["d"]}', 'a') as file:
+                            file.write(f'{self.analyzed_and_downloaded_tracks["d"]}] {track_name}\n')
+                        self.mutex.release()
 
                         cover_filename = f'{self.download_folder_path}/covers/{track_name}.jpg'
                         track.download_cover(cover_filename, size="300x300")
@@ -773,8 +789,9 @@ class YandexMusicDownloader:
                             logger.debug(f'Трек [{track_name}] отсутствует в базе данных по пути '
                                          f'[{self.history_database_path}]. Добавляю в базу.')
                             self._add_track_to_database(track=track, codec=codec, bit_rate=bitrate,
-                                                       is_favorite=self._is_track_liked(track.id))
-                            logger.debug(f'Трек [{track_name}] был добавлен в базу данных [{self.history_database_path}].')
+                                                        is_favorite=self._is_track_liked(track.id))
+                            logger.debug(
+                                f'Трек [{track_name}] был добавлен в базу данных [{self.history_database_path}].')
                         else:
                             logger.debug(f'Трек [{track_name}] уже присутствует в базе данных по пути '
                                          f'[{self.history_database_path}].')
@@ -790,7 +807,7 @@ class YandexMusicDownloader:
                     if not track_exists:
                         logger.debug(f'Не удалось скачать трек [{track_name}].')
                         self.mutex.acquire()
-                        with open(self.filename, 'a') as file:
+                        with open(self.filenames['e'], 'a') as file:
                             file.write(f"{track.artists[0].name} - {track.title} - Не удалось скачать трек\n")
                         self.mutex.release()
 
@@ -798,7 +815,8 @@ class YandexMusicDownloader:
                 self.analyzed_and_downloaded_tracks["a"] += 1
                 self.mutex.release()
             except IOError:
-                logger.error(f'Ошибка при попытке записи в файл [{self.filename}].')
+                logger.error(f'Ошибка при попытке записи в один из файлов [{self.filenames["e"]}] или '
+                             f'[{self.filenames["d"]}].')
 
         def _is_track_in_database(self, track: Track) -> bool:
             """
