@@ -105,7 +105,7 @@ class YandexMusicDownloader:
         configuration_window = tkinter.Tk()
         configuration_window.geometry('550x220')
         try:
-            configuration_window.iconbitmap('icon.ico')
+            configuration_window.iconbitmap(config.pathes["files"]["icon"])
         except tkinter.TclError:
             pass
 
@@ -226,9 +226,9 @@ class YandexMusicDownloader:
         self.chunk_of_tracks = config.chunk_of_tracks
 
         self.main_window = tkinter.Tk()
-        self.main_window.geometry('550x150')
+        self.main_window.geometry('550x170')
         try:
-            self.main_window.iconbitmap('icon.ico')
+            self.main_window.iconbitmap(config.pathes["files"]["icon"])
         except tkinter.TclError:
             pass
 
@@ -261,7 +261,11 @@ class YandexMusicDownloader:
             about_window = tkinter.Toplevel(self.main_window)
             about_window.geometry('250x90')
             about_window.title('О программе')
-            # about_window.resizable(width=False, height=False)
+            try:
+                about_window.iconbitmap(config.pathes["files"]["icon"])
+            except tkinter.TclError:
+                pass
+            about_window.resizable(width=False, height=False)
 
             label_about = tkinter.Label(about_window, text=f'Версия: {config.__version__};\n'
                                                            f'Написал laynholt в {config.__data__};\n'
@@ -458,7 +462,10 @@ class YandexMusicDownloader:
             child_window = tkinter.Toplevel(self.main_window)
             child_window.geometry('300x100')
             child_window.resizable(width=False, height=False)
-
+            try:
+                child_window.iconbitmap(config.pathes["files"]["icon"])
+            except tkinter.TclError:
+                pass
             child_window.title(f'{playlist.title}')
 
             progress_bar = Progressbar(child_window, orient='horizontal', mode='determinate', length=280)

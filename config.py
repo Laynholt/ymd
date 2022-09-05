@@ -25,7 +25,8 @@ pathes = {
 
     'files': {
         'history': 'history.db',
-        'default_playlist_cover': 'stuff/default_playlist_cover.jpg'
+        'default_playlist_cover': 'stuff/default_playlist_cover.jpg',
+        'icon': 'stuff/icon.ico'
     }
 }
 
