@@ -32,7 +32,7 @@ from mutagen import File
 from mutagen.id3 import TIT2, TPE1, TALB, APIC, TDRC
 
 from yandex_music import Client, Track, TracksList
-from yandex_music.exceptions import YandexMusicError, UnauthorizedError
+from yandex_music.exceptions import YandexMusicError, UnauthorizedError, NetworkError
 
 import config
 from custom_formatter import CustomFormatter, logger_format
@@ -58,9 +58,9 @@ def setup_logger(logger_type: int):
     logger.addHandler(console_handler)
 
 
-def strip_bad_symbols(text: str, save_comma: bool = False) -> str:
-    if save_comma:
-        result = re.sub(r"[^\w_.,)( -]", "", text)
+def strip_bad_symbols(text: str, soft_mode: bool = False) -> str:
+    if soft_mode:
+        result = re.sub(r"[^\w!@#$%^&)(_+}\]\[{,.;= -]", "", text)
     else:
         result = re.sub(r"[^\w_.)( -]", "", text)
     return result
@@ -78,8 +78,11 @@ class YandexMusicDownloader:
         Метод, для запуска загрузчика
         :return:
         """
-        if self._run_configuration_window():
-            self._run_main_window()
+        try:
+            if self._run_configuration_window():
+                self._run_main_window()
+        except NetworkError:
+            messagebox.showerror('Ошибка', 'Не удалось подключиться к Yandex!\nПопробуйте позже.')
 
     def _run_configuration_window(self) -> bool:
         """
@@ -303,7 +306,8 @@ class YandexMusicDownloader:
                                          command=self._wrapper_update_tracks)
         self.check_id_in_name = tkinter.BooleanVar()
         self.check_id_in_name.set(False)
-        self.menu_additional.add_checkbutton(label='Добавить id трека в название (позволит качать одинаковые)',
+        self.menu_additional.add_checkbutton(label='Добавить id трека в название (позволит качать треки с одинаковыми '
+                                                   'названиями)',
                                              onvalue=1, offvalue=0, variable=self.check_id_in_name)
 
         self.menu_main.add_cascade(label='Дополнительно', menu=self.menu_additional)
@@ -576,6 +580,7 @@ class YandexMusicDownloader:
                     playlist_title=playlist_title,
                     number_tracks_in_playlist=playlist.track_count,
                     liked_tracks=self.liked_tracks,
+                    add_track_id_to_name=self.check_id_in_name.get(),
                     main_thread_state=lambda: self.main_thread_state,
                     child_thread_state=lambda: child_thread_state,
                     update_mode=update_mode
@@ -636,9 +641,14 @@ class YandexMusicDownloader:
                         logger.debug('Окно загрузки получило сигнал на завершение, начинаю подготовку '
                                      'к прекращению работы.')
                         break
+
+                    if YandexMusicDownloader.DownloaderWorker.is_network_error:
+                        logger.error('Возникла ошибка с подключением к Яндекс Музыке, начинаю подготовку '
+                                     'к прекращению работы.')
+                        break
                 else:
                     if not update_mode:
-                        logger.debug(f'Загружка треков для плейлиста '
+                        logger.debug(f'Загрузка треков для плейлиста '
                                      f'[{playlist_title}] завершена. Загружено '
                                      f'[{self.downloading_or_updating_playlists[playlist.kind].analyzed_and_downloaded_tracks["d"]}]'
                                      f' трека(ов).')
@@ -657,7 +667,8 @@ class YandexMusicDownloader:
                     worker.join()
                     logger.debug(f'Поток [{worker_id}] был завершён.')
 
-                if not self.main_thread_state or not child_thread_state:
+                if not self.main_thread_state or not child_thread_state or\
+                        YandexMusicDownloader.DownloaderWorker.is_network_error:
                     logger.debug('Завершаю работу.')
                 else:
                     if not update_mode:
@@ -719,8 +730,8 @@ class YandexMusicDownloader:
     class DownloaderHelper:
         def __init__(self, progress_bar: Progressbar, label_value: tkinter.Label, download_folder_path: str,
                      history_database_path: str, is_rewritable: bool, download_only_new: bool, filenames: dict,
-                     playlist_title: str, number_tracks_in_playlist: int, liked_tracks: TracksList, main_thread_state,
-                     child_thread_state, update_mode):
+                     playlist_title: str, number_tracks_in_playlist: int, liked_tracks: TracksList,
+                     add_track_id_to_name: bool, main_thread_state, child_thread_state, update_mode):
             self.progress_bar = progress_bar
             self.label_value = label_value
             self.download_folder_path = download_folder_path
@@ -731,6 +742,7 @@ class YandexMusicDownloader:
             self.playlist_title = playlist_title
             self.number_tracks_in_playlist = number_tracks_in_playlist
             self.liked_tracks = liked_tracks
+            self.add_track_id_to_name = add_track_id_to_name
             self.main_thread_state = main_thread_state
             self.child_thread_state = child_thread_state
             self.update_mode = update_mode
@@ -777,6 +789,10 @@ class YandexMusicDownloader:
             try:
                 track_artists = ', '.join(i['name'] for i in track.artists)
                 track_title = track.title + ("" if track.version is None else f' ({track.version})')
+                track_id = ''
+                if self.add_track_id_to_name:
+                    track_id = f' [{track.id}]'
+                track_name = strip_bad_symbols(f"{track_artists} - {track_title}{track_id}", soft_mode=True)
 
                 if not self.main_thread_state() or not self.child_thread_state():
                     logger.debug('Основное окно или окно загрузки получило сигнал на завершение, начинаю подготовку '
@@ -793,14 +809,13 @@ class YandexMusicDownloader:
                         self.analyzed_and_downloaded_tracks["a"] += 1
                         self.mutex.release()
 
-                        logger.debug(f'Трек [{track_artists} - {track_title}] уже существует в базе '
+                        logger.debug(f'Трек [{track_name}] уже существует в базе '
                                      f'[{self.history_database_path}]. Так как включён мод ONLY_NEW, выхожу.')
                         return
                     else:
-                        logger.debug(f'Трека [{track_artists} - {track_title}] нет в базе '
+                        logger.debug(f'Трека [{track_name}] нет в базе '
                                      f'[{self.history_database_path}]. Подготавливаюсь к его загрузки.')
 
-                track_name = strip_bad_symbols(f"{track_artists} - {track_title}", save_comma=True)
                 if not track.available:
                     logger.error(f'Трек [{track_name}] недоступен.')
                     self.mutex.acquire()
@@ -884,6 +899,8 @@ class YandexMusicDownloader:
                             logger.debug(f'Метаданные трека [{track_name}] были обновлены.')
                         except AttributeError:
                             logger.error(f'Не удалось обновить метаданные для файла [{full_track_name}].')
+                        except TypeError:
+                            logger.error(f'Не удалось обновить метаданные для файла [{full_track_name}].')
 
                         self.mutex.acquire()
                         if not self._is_track_in_database(track=track):
@@ -909,7 +926,7 @@ class YandexMusicDownloader:
                         logger.error(f'Не удалось скачать трек [{track_name}].')
                         self.mutex.acquire()
                         with open(self.filenames['e'], 'a', encoding='utf-8') as file:
-                            file.write(f"{track.artists[0].name} - {track_title} - Не удалось скачать трек\n")
+                            file.write(f"{track_name} - Не удалось скачать трек\n")
                         self.mutex.release()
 
                 self.mutex.acquire()
@@ -930,7 +947,11 @@ class YandexMusicDownloader:
 
             track_artists = ', '.join(i['name'] for i in track.artists)
             track_title = track.title + ("" if track.version is None else f' ({track.version})')
-            logger.debug(f'Ищу трек [{track_artists} - {track_title}] в базе [{self.history_database_path}].')
+            track_id = ''
+            if self.add_track_id_to_name:
+                track_id = f' [{track.id}]'
+            track_name = strip_bad_symbols(f"{track_artists} - {track_title}{track_id}", soft_mode=True)
+            logger.debug(f'Ищу трек [{track_name}] в базе [{self.history_database_path}].')
 
             with sqlite3.connect(self.history_database_path) as con:
                 cursor = con.cursor()
@@ -952,7 +973,11 @@ class YandexMusicDownloader:
 
             track_artists = ', '.join(i['name'] for i in track.artists)
             track_title = track.title + ("" if track.version is None else f' ({track.version})')
-            logger.debug(f'Добавляю трек [{track_artists} - {track_title}] в базу [{self.history_database_path}].')
+            track_id = ''
+            if self.add_track_id_to_name:
+                track_id = f' [{track.id}]'
+            track_name = strip_bad_symbols(f"{track_artists} - {track_title}{track_id}", soft_mode=True)
+            logger.debug(f'Добавляю трек [{track_name}] в базу [{self.history_database_path}].')
 
             con = None
             metadata = []
@@ -997,7 +1022,10 @@ class YandexMusicDownloader:
             """
             track_artists = ', '.join(i['name'] for i in track.artists)
             track_title = track.title + ("" if track.version is None else f' ({track.version})')
-            track_name = strip_bad_symbols(f"{track_artists} - {track_title}", save_comma=True)
+            track_id = ''
+            if self.add_track_id_to_name:
+                track_id = f' [{track.id}]'
+            track_name = strip_bad_symbols(f"{track_artists} - {track_title}{track_id}", soft_mode=True)
 
             if not self.main_thread_state() or not self.child_thread_state():
                 logger.debug('Основное окно или окно загрузки получило сигнал на завершение, начинаю подготовку '
@@ -1006,7 +1034,6 @@ class YandexMusicDownloader:
 
             for info in sorted(track.get_download_info(), key=lambda x: x['bitrate_in_kbps'], reverse=True):
                 codec = info.codec
-                bitrate = info.bitrate_in_kbps
                 full_track_name = os.path.abspath(f'{self.download_folder_path}/{track_name}.{codec}')
 
                 # Если трек существует и мы не перезаписываем, то выходим, но скачала проеверяем, есть ли он в базе
@@ -1038,6 +1065,8 @@ class YandexMusicDownloader:
                         logger.debug(f'Метаданные трека [{track_name}] были обновлены.')
                     except AttributeError:
                         logger.error(f'Не удалось обновить метаданные для файла [{full_track_name}].')
+                    except TypeError:
+                        logger.error(f'Не удалось обновить метаданные для файла [{full_track_name}].')
 
                     self.analyzed_and_downloaded_tracks['u'] += 1
                     break
@@ -1051,8 +1080,12 @@ class YandexMusicDownloader:
             """
             track_artists = ', '.join(i['name'] for i in track.artists)
             track_title = track.title + ("" if track.version is None else f' ({track.version})')
-            old_track_name = strip_bad_symbols(f"{track_artists} - {track_title}")
-            new_track_name = strip_bad_symbols(f"{track_artists} - {track_title}", save_comma=True)
+            track_id = ''
+            if self.add_track_id_to_name:
+                track_id = f' [{track.id}]'
+            track_name = f"{track_artists} - {track_title}{track_id}"
+            old_track_name = strip_bad_symbols(f"{track_name}")
+            new_track_name = strip_bad_symbols(f"{track_name}", soft_mode=True)
 
             if os.path.exists(f'{self.download_folder_path}/{old_track_name}.mp3'):
                 try:
@@ -1066,6 +1099,9 @@ class YandexMusicDownloader:
                     logger.error(f'Не удалось переименовать файл [{old_track_name}] в [{new_track_name}].')
 
     class DownloaderWorker(threading.Thread):
+        is_network_error = False
+        _network_error_was_showed = False
+
         def __init__(self, queue: Queue, helper):
             threading.Thread.__init__(self)
             self.queue = queue
@@ -1090,24 +1126,41 @@ class YandexMusicDownloader:
 
                     track_artists = ', '.join(i['name'] for i in track.artists)
                     track_title = track.title + ("" if track.version is None else f' ({track.version})')
-                    # logger.debug(f'Подготовка к началу обновления трека [{track_artists} - {track_title}].')
+                    track_id = ''
+                    if self.helper.add_track_id_to_name:
+                        track_id = f' [{track.id}]'
+                    track_name = strip_bad_symbols(f"{track_artists} - {track_title}{track_id}", soft_mode=True)
+
+                    # logger.debug(f'Подготовка к началу обновления трека [{track_name}].')
                     # self.helper._update_track_name(track)
-                    # logger.debug(f'Обновление трека [{track_artists} - {track_title}] завершено.')
+                    # logger.debug(f'Обновление трека [{track_name}] завершено.')
 
                     if not self.helper.update_mode:
-                        logger.debug(f'Подготовка к началу загрузки трека [{track_artists} - {track_title}].')
+                        logger.debug(f'Подготовка к началу загрузки трека [{track_name}].')
                         self.helper.download_track(track)
-                        logger.debug(f'Загрузка трека [{track_artists} - {track_title}] завершена.')
+                        logger.debug(f'Загрузка трека [{track_name}] завершена.')
                     else:
-                        logger.debug(f'Подготовка к началу обновления трека [{track_artists} - {track_title}].')
+                        logger.debug(f'Подготовка к началу обновления трека [{track_name}].')
                         self.helper.update_track_metadata(track)
-                        logger.debug(f'Обновление трека [{track_artists} - {track_title}] завершено.')
+                        logger.debug(f'Обновление трека [{track_name}] завершено.')
 
                     if not self.helper.main_thread_state() or not self.helper.child_thread_state() or self.is_finished:
                         break
 
                     self.helper.change_progress_bar_state()
-                    logger.debug(f'Програсс бар с учётом трека [{track.artists[0].name} - {track_title}] изменён.')
+                    logger.debug(f'Програсс бар с учётом трека [{track_name}] изменён.')
+
+                except NetworkError:
+                    logger.error('Не удалось связаться с сервисом Яндекс Музыка!')
+                    if not YandexMusicDownloader.DownloaderWorker._network_error_was_showed:
+                        YandexMusicDownloader.DownloaderWorker._network_error_was_showed = True
+                        messagebox.showerror('Ошибка', 'Не удалось связаться с сервисом Яндекс Музыка!'
+                                                       '\nПопробуйте позже.')
+                        YandexMusicDownloader.DownloaderWorker.is_network_error = True
+                    break
+
+                except Exception:
+                    logger.error('Что-то пошло не так.')
 
                 finally:
                     self.queue.task_done()
