@@ -698,6 +698,11 @@ class YandexMusicDownloader:
             except ValueError:
                 logger.error(f'Не удалось удалить плейлист [{playlist_title}] из списка {info} плейлистов.')
 
+        except NetworkError:
+            logger.error('Возникла ошибка с подключением к Яндекс Музыке, завершаю работу...')
+            messagebox.showerror('Ошибка', 'Возникла ошибка с подключением к Яндекс Музыке!\nПопробуйте позже.')
+            child_window.destroy()
+
         except Exception:
             pass
 
