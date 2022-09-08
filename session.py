@@ -1,0 +1,150 @@
+"""
+Источники:
+    1) https://github.com/AlexxIT/YandexStation/blob/master/custom_components/yandex_station/core/yandex_session.py
+    2) https://github.com/MarshalX/yandex-music-token
+    3) https://t.me/MarshalC/766
+
+"""
+
+import re
+from aiohttp import ClientSession
+
+
+class YandexSession:
+    """
+    Класс для авторизации в Яндекс по логину и паролю для получения токена для ЯМ
+    """
+
+    class LoginResponse:
+        """
+        Класс для возвращаемого значения от Яндекс сессии
+        """
+        def __init__(self):
+            self.resp = {"error": None, "token": None}
+
+        def set_error(self, error: str):
+            self.resp["error"] = error
+
+        def set_token(self, token: str):
+            self.resp["token"] = token
+
+        def get_error(self):
+            return self.resp["error"]
+
+        def get_token(self):
+            return self.resp["token"]
+
+    def __init__(self, login: str, password: str):
+        self.auth_payload: dict = None
+        self.session = ClientSession()
+        self.x_token = None
+        self.login = login
+        self.password = password
+        self.login_response = YandexSession.LoginResponse()
+
+    async def _login_username(self):
+        """
+        Первым шагом отправляется логин пользователя.
+        Происходит проверка на существование аккаунта, возможность входа (есть ли ограничение),
+        возможность регистрации нового аккаунта с таким логином при его отсутствии.
+
+        Результатом первого шага является так называемый track id — это некий идентификатор сессии авторизации.
+        """
+        # csrf_token
+        r = await self.session.get("https://passport.yandex.ru/am?app_platform=android")
+        resp = await r.text()
+        m = re.search(r'"csrf_token" value="([^"]+)"', resp)
+        self.auth_payload = {"csrf_token": m[1]}
+
+        # track_id
+        r = await self.session.post(
+            "https://passport.yandex.ru/registration-validations/auth/multi_step/start",
+            data={**self.auth_payload, "login": self.login}
+        )
+        resp = await r.json()
+        if resp.get("can_register") is True:
+            self.login_response.set_error("Аккаунт не найден!")
+            return
+
+        self.auth_payload["track_id"] = resp["track_id"]
+
+    async def _login_password(self):
+        """
+        Вторым шагом происходит проверка аутентификатора.
+        Отправляется запрос содержащий в себе пароль пользователя, который может быть OTP при включённой 2FA и
+        непосредственно сам идентификатор с прошлого шага.
+
+        При успешном выполнении запроса получаем большой объект с информацией об аккаунте
+        (имя, логин, дата рождения, аватарка и прочее) и очень важный атрибут — X-Token.
+        """
+
+        r = await self.session.post(
+            "https://passport.yandex.ru/registration-validations/auth/multi_step/commit_password",
+            data={
+                **self.auth_payload,
+                "password": self.password,
+                "retpath": "https://passport.yandex.ru/am/finish?status=ok&from=Login"
+            }
+        )
+        resp = await r.json()
+        if resp["status"] != "ok":
+            self.login_response.set_error("Не удалось авторизоваться!")
+            return
+
+        if "redirect_url" in resp:
+            self.login_response.set_error("Редирект не поддерживается!")
+            return
+
+        # x_token
+        await self._login_cookies()
+
+    async def _login_cookies(self):
+        """
+        В конце концов мы стучимся за токеном к определённому приложению.
+        Стучимся с помощью нашего универсального X-Token’a, а в запросе указываем данные от необходимого нам приложения.
+        """
+        host = "passport.yandex.ru"
+
+        cookies = "; ".join([
+            f"{c.key}={c.value}" for c in self.session.cookie_jar
+            if c["domain"].endswith("yandex.ru")
+        ])
+
+        r = await self.session.post(
+            "https://mobileproxy.passport.yandex.net/1/bundle/oauth/token_by_sessionid",
+            data={
+                "client_id": "c0ebe342af7d48fbbbfcf2d2eedb8f9e",
+                "client_secret": "ad0a908f0aa341a182a37ecd75bc319e",
+            }, headers={
+                "Ya-Client-Host": host,
+                "Ya-Client-Cookie": cookies
+            }
+        )
+        resp = await r.json()
+        self.x_token = resp["access_token"]
+
+    async def get_music_token(self) -> LoginResponse:
+        """
+        Получаем токен ЯМ по X-токену
+        """
+        await self._login_username()
+        if self.login_response.get_error() is None:
+            await self._login_password()
+            if self.login_response.get_error() is None:
+                payload = {
+                    # Thanks to https://github.com/MarshalX/yandex-music-api/
+                    'client_secret': '53bc75238f0c4d08a118e51fe9203300',
+                    'client_id': '23cabbbdc6cd418abb4b39c32c41195d',
+                    'grant_type': 'x-token',
+                    'access_token': self.x_token
+                }
+                r = await self.session.post(
+                    'https://oauth.mobile.yandex.net/1/token', data=payload
+                )
+                resp = await r.json()
+                if 'access_token' in resp:
+                    self.login_response.set_token(resp['access_token'])
+                else:
+                    self.login_response.set_error('Не удалось получить токен!')
+        await self.session.close()
+        return self.login_response
