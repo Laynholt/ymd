@@ -30,7 +30,7 @@ from queue import Queue, Empty
 from PIL import Image, ImageTk
 
 from mutagen import File
-from mutagen.id3 import TIT2, TPE1, TALB, APIC, TDRC
+from mutagen.id3 import TIT2, TPE1, TALB, APIC, TDRC, TRCK, TPOS, TPE2, TCON, USLT
 
 from yandex_music import Client, Track, TracksList
 from yandex_music.exceptions import YandexMusicError, UnauthorizedError, NetworkError
@@ -382,8 +382,10 @@ class YandexMusicDownloader:
         self.menu_additional.add_command(label='Добавить текущий плейлист в базу (без скачивания треков)',
                                          command=lambda: self._wrapper_download_or_update_tracks(
                                              only_add_to_database=True))
+        self.menu_additional.add_separator()
         self.menu_additional.add_command(label='Выборочно скачать треки из текущего плейлиста',
                                          command=lambda: False)
+        self.menu_additional.add_separator()
         self.check_id_in_name = tkinter.BooleanVar()
         self.check_id_in_name.set(False)
         self.menu_additional.add_checkbutton(label='Добавить id трека в название (позволит качать треки с одинаковыми '
@@ -769,7 +771,8 @@ class YandexMusicDownloader:
                     logger.debug('Завершаю работу.')
                 else:
                     if update_mode:
-                        if self.downloading_or_updating_playlists[playlist.kind].analyzed_and_downloaded_tracks['u'] > 0:
+                        if self.downloading_or_updating_playlists[playlist.kind].analyzed_and_downloaded_tracks[
+                            'u'] > 0:
                             messagebox.showinfo('Инфо',
                                                 f'Обновление треков плейлиста [{current_playlist.title}] закончено!\n'
                                                 f'Обновлено [{self.downloading_or_updating_playlists[playlist.kind].analyzed_and_downloaded_tracks["u"]}] трека(ов).')
@@ -779,7 +782,8 @@ class YandexMusicDownloader:
                                                 f'Попробуйте сначала скачать данный плейлист, либо поставить '
                                                 f'галочку напротив "id трека в названии".')
                     elif only_add_to_database:
-                        if self.downloading_or_updating_playlists[playlist.kind].analyzed_and_downloaded_tracks['u'] > 0:
+                        if self.downloading_or_updating_playlists[playlist.kind].analyzed_and_downloaded_tracks[
+                            'u'] > 0:
                             messagebox.showinfo('Инфо',
                                                 f'Добавление в базу данных треков плейлиста [{current_playlist.title}] закончено!\n'
                                                 f'Добавлено [{self.downloading_or_updating_playlists[playlist.kind].analyzed_and_downloaded_tracks["u"]}] трека(ов).')
@@ -788,7 +792,8 @@ class YandexMusicDownloader:
                                                 f'В выбранной базе данных [{self.history_database_path}] уже '
                                                 f'присутствуют все треки из плейлиста [{current_playlist.title}].')
                     else:
-                        if self.downloading_or_updating_playlists[playlist.kind].analyzed_and_downloaded_tracks['d'] > 0:
+                        if self.downloading_or_updating_playlists[playlist.kind].analyzed_and_downloaded_tracks[
+                            'd'] > 0:
                             messagebox.showinfo('Инфо',
                                                 f'Загрузка треков плейлиста [{current_playlist.title}] закончена!\n'
                                                 f'Загружено [{self.downloading_or_updating_playlists[playlist.kind].analyzed_and_downloaded_tracks["d"]}] трека(ов).')
@@ -837,11 +842,15 @@ class YandexMusicDownloader:
                           f"artist_name TEXT NOT NULL," \
                           f"album_name TEXT," \
                           f"genre TEXT," \
+                          f"track_number INTEGER NOT NULL," \
+                          f"disk_number INTEGER NOT NULL," \
                           f"year INTEGER," \
                           f"release_data TEXT," \
                           f"bit_rate INTEGER NOT NULL," \
                           f"codec TEXT NOT NULL," \
-                          f"is_favorite INTEGER NOT NULL" \
+                          f"is_favorite INTEGER NOT NULL," \
+                          f"is_explicit INTEGER NOT NULL DEFAULT 0," \
+                          f"is_popular INTEGER NOT NULL DEFAULT 0" \
                           f")"
                 cur.execute(request)
 
@@ -1000,21 +1009,18 @@ class YandexMusicDownloader:
                         logger.debug(f'Обложка для трека [{track_name}] была скачана в [{cover_filename}].')
 
                         try:
-                            file = File(full_track_name)
-                            with open(cover_filename, 'rb') as cover_file:
-                                file.update({
-                                    # Title
-                                    'TIT2': TIT2(encoding=3, text=track_title),
-                                    # Artist
-                                    'TPE1': TPE1(encoding=3, text=', '.join(i['name'] for i in track.artists)),
-                                    # Album
-                                    'TALB': TALB(encoding=3, text=', '.join(i['title'] for i in track.albums)),
-                                    # Year
-                                    'TDRC': TDRC(encoding=3, text=str(track.albums[0]['year'])),
-                                    # Picture
-                                    'APIC': APIC(encoding=3, text=cover_filename, data=cover_file.read())
-                                })
-                            file.save()
+                            lyrics = track.get_supplement().lyrics
+                            self._write_track_metadata(full_track_name=full_track_name,
+                                                       track_title=track_title,
+                                                       artists=track.artists,
+                                                       albums=track.albums,
+                                                       genre=track.albums[0].genre,
+                                                       album_artists=track.albums[0].artists,
+                                                       year=track.albums[0]['year'],
+                                                       cover_filename=cover_filename,
+                                                       track_position=track.albums[0].track_position.index,
+                                                       disk_number=track.albums[0].track_position.volume,
+                                                       lyrics=lyrics)
                             logger.debug(f'Метаданные трека [{track_name}] были обновлены.')
                         except AttributeError:
                             logger.error(f'Не удалось обновить метаданные для файла [{full_track_name}].')
@@ -1104,22 +1110,27 @@ class YandexMusicDownloader:
                 con = sqlite3.connect(self.history_database_path)
                 cursor = con.cursor()
                 request = f"INSERT INTO {_playlist_name}(" \
-                          f"track_id, artist_id, album_id, track_name, artist_name, album_name, genre, year," \
-                          f" release_data, bit_rate, codec, is_favorite) " \
-                          f"VALUES(?,?,?,?,?,?,?,?,?,?,?,?);"
+                          f"track_id, artist_id, album_id, track_name, artist_name, album_name, genre, track_number, " \
+                          f"disk_number, year, release_data, bit_rate, codec, is_favorite, is_explicit, is_popular) " \
+                          f"VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);"
 
-                track_id = track.id
+                track_id = int(track.id)
                 artist_id = ', '.join(str(i.id) for i in track.artists)
                 album_id = ', '.join(str(i.id) for i in track.albums)
                 track_name = track_title
                 artist_name = track_artists
                 album_name = ', '.join(i.title for i in track.albums)
                 genre = track.albums[0].genre
+                track_number = track.albums[0].track_position.index
+                disk_number = track.albums[0].track_position.volume
                 year = track.albums[0].year
                 release_data = track.albums[0].release_date
+                is_explicit = True if track.content_warning is not None else False
+                is_popular = True if int(track.id) in track.albums[0].bests else False
 
                 metadata = [track_id, artist_id, album_id, track_name, artist_name, album_name,
-                            genre, year, release_data, bit_rate, codec, is_favorite]
+                            genre, track_number, disk_number, year, release_data, bit_rate, codec,
+                            is_favorite, is_explicit, is_popular]
 
                 cursor.execute(request, metadata)
                 con.commit()
@@ -1132,6 +1143,36 @@ class YandexMusicDownloader:
             finally:
                 if con is not None:
                     con.close()
+
+        @staticmethod
+        def _write_track_metadata(full_track_name, track_title, artists, albums, genre, album_artists, year,
+                                  cover_filename, track_position, disk_number, lyrics):
+            file = File(full_track_name)
+            with open(cover_filename, 'rb') as cover_file:
+                file.update({
+                    # Title
+                    'TIT2': TIT2(encoding=3, text=track_title),
+                    # Artist
+                    'TPE1': TPE1(encoding=3, text=', '.join(i['name'] for i in artists)),
+                    # Album
+                    'TALB': TALB(encoding=3, text=', '.join(i['title'] for i in albums)),
+                    # Genre
+                    'TCON': TCON(encoding=3, text=genre),
+                    # Album artists
+                    'TPE2': TPE2(encoding=3, text=', '.join(i['name'] for i in album_artists)),
+                    # Year
+                    'TDRC': TDRC(encoding=3, text=str(year)),
+                    # Picture
+                    'APIC': APIC(encoding=3, text=cover_filename, data=cover_file.read()),
+                    # Track number
+                    'TRCK': TRCK(encoding=3, text=str(track_position)),
+                    # Disk number
+                    'TPOS': TPOS(encoding=3, text=str(disk_number))
+                })
+            if lyrics is not None:
+                # Song lyrics
+                file.tags.add(USLT(encoding=3, text=lyrics.full_lyrics))
+            file.save()
 
         def add_track_to_database(self, track: Track):
             """
@@ -1187,6 +1228,11 @@ class YandexMusicDownloader:
                              'к прекращению работы.')
                 return
 
+            if not track.available:
+                logger.error(f'Трек [{track_name}] недоступен.')
+                self.analyzed_and_downloaded_tracks["a"] += 1
+                return
+
             for info in sorted(track.get_download_info(), key=lambda x: x['bitrate_in_kbps'], reverse=True):
                 codec = info.codec
                 full_track_name = os.path.abspath(f'{self.download_folder_path}/{track_name}.{codec}')
@@ -1202,21 +1248,18 @@ class YandexMusicDownloader:
                         track.download_cover(cover_filename, size="300x300")
                         logger.debug(f'Обложка для трека [{track_name}] была скачана в [{cover_filename}].')
                     try:
-                        file = File(full_track_name)
-                        with open(cover_filename, 'rb') as cover_file:
-                            file.update({
-                                # Title
-                                'TIT2': TIT2(encoding=3, text=track_title),
-                                # Artist
-                                'TPE1': TPE1(encoding=3, text=', '.join(i['name'] for i in track.artists)),
-                                # Album
-                                'TALB': TALB(encoding=3, text=', '.join(i['title'] for i in track.albums)),
-                                # Year
-                                'TDRC': TDRC(encoding=3, text=str(track.albums[0]['year'])),
-                                # Picture
-                                'APIC': APIC(encoding=3, text=cover_filename, data=cover_file.read())
-                            })
-                        file.save()
+                        lyrics = track.get_supplement().lyrics
+                        self._write_track_metadata(full_track_name=full_track_name,
+                                                   track_title=track_title,
+                                                   artists=track.artists,
+                                                   albums=track.albums,
+                                                   genre=track.albums[0].genre,
+                                                   album_artists=track.albums[0].artists,
+                                                   year=track.albums[0]['year'],
+                                                   cover_filename=cover_filename,
+                                                   track_position=track.albums[0].track_position.index,
+                                                   disk_number=track.albums[0].track_position.volume,
+                                                   lyrics=lyrics)
                         logger.debug(f'Метаданные трека [{track_name}] были обновлены.')
                     except AttributeError:
                         logger.error(f'Не удалось обновить метаданные для файла [{full_track_name}].')
