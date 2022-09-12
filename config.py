@@ -33,6 +33,6 @@ pathes = {
     }
 }
 
-__version__ = '0.3'
-__data__ = '04.09.2022'
+__version__ = '0.4'
+__data__ = '09/2022'
 __github__ = 'https://github.com/Laynholt/ymd'

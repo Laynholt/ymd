@@ -29,6 +29,8 @@ import webbrowser
 from queue import Queue, Empty
 from PIL import Image, ImageTk
 
+import ahocorasick
+
 from mutagen import File
 from mutagen.id3 import TIT2, TPE1, TALB, APIC, TDRC, TRCK, TPOS, TPE2, TCON, USLT
 
@@ -324,26 +326,14 @@ class YandexMusicDownloader:
         self.main_window.title('Yandex Music Downloader')
         self.main_window.resizable(width=False, height=False)
 
-        # Проверяем введённый токен на валидность
-        try:
-            self.client = Client(token=self.token)
-            self.client.init()
-            logger.debug('Введённый токен валиден, авторизация прошла успешно!')
-        except UnauthorizedError:
-            logger.error('Введен невалидный токен!')
-            messagebox.showerror('Ошибка', 'Введенный токен невалиден!')
-            self.main_window.destroy()
-            return
-
-        self.playlists = self.client.users_playlists_list()
-        self.liked_tracks = self.client.users_likes_tracks()
+        self.client = None
+        self.playlists = []
+        self.liked_tracks = []
         self.downloading_or_updating_playlists = {}
+        self.partial_downloading_or_updating_tracks = {}
 
-        # Создаем рабочие директории
-        self._create_stuff_directories()
-
-        # Скачиваем все обложки всех плейлистов
-        thread = threading.Thread(target=self._download_all_playlists_covers)
+        # Загружаем все пользовательские данные
+        thread = threading.Thread(target=self._load_all_account_info)
         thread.start()
 
         def _about():
@@ -384,7 +374,9 @@ class YandexMusicDownloader:
                                              only_add_to_database=True))
         self.menu_additional.add_separator()
         self.menu_additional.add_command(label='Выборочно скачать треки из текущего плейлиста',
-                                         command=lambda: False)
+                                         command=lambda: self._partial_download_or_update_playlist())
+        self.menu_additional.add_command(label='Выборочно обновить треки из текущего плейлиста',
+                                         command=lambda: self._partial_download_or_update_playlist(update_mode=True))
         self.menu_additional.add_separator()
         self.check_id_in_name = tkinter.BooleanVar()
         self.check_id_in_name.set(False)
@@ -407,25 +399,15 @@ class YandexMusicDownloader:
         self.label_playlist_names = tkinter.Label(self.main_window, text='Выберете плейлист для скачивания:')
         self.label_playlist_names.grid(column=1, row=0, columnspan=2, sticky=tkinter.W, pady=5)
 
-        combo_width = 40
-        if len(self.playlists):
-            for playlist in self.playlists:
-                title_width = len(playlist.title)
-                if combo_width < title_width < 0.7 * self.main_window.winfo_width():
-                    combo_width = playlist.title
-
         # Реагируем на изменения в комбобоксе и вызываем метод отбновления обложки
         def _combo_was_updated(value) -> bool:
             self._change_current_playlist_cover()
             return True
 
-        self.combo_playlists = Combobox(self.main_window, width=combo_width, validate='focusout',
+        self.combo_playlists = Combobox(self.main_window, width=40, validate='focusout',
                                         validatecommand=(self.main_window.register(_combo_was_updated), '%P'))
         self.combo_playlists.bind('<<ComboboxSelected>>', _combo_was_updated)
-        for playlist in self.playlists:
-            self.combo_playlists['values'] = (*self.combo_playlists['values'], f'{playlist.title}')
         self.combo_playlists['state'] = 'readonly'
-        self.combo_playlists.current(0)
         self.combo_playlists.grid(column=1, row=1, columnspan=2, sticky=tkinter.W)
 
         self.label_track_number_text = tkinter.Label(self.main_window, text='Количество треков в плейлисте:')
@@ -440,9 +422,6 @@ class YandexMusicDownloader:
         self.button_download = tkinter.Button(self.main_window, width=15, text='Скачать',
                                               command=lambda: self._wrapper_download_or_update_tracks())
         self.button_download.grid(column=3, row=3)
-
-        # Изменияем текущую отображающуюся обложку плейлиста
-        self._change_current_playlist_cover()
 
         # Изменяем правило, при закрытие окна
         def _prepare_to_close_main_program():
@@ -464,10 +443,173 @@ class YandexMusicDownloader:
             self.main_window.destroy()
 
         self.main_window.protocol("WM_DELETE_WINDOW", _prepare_to_close_main_program)
-
-        # Создание необходимых таблиц в базе данных
-        self._database_create_tables()
         self.main_window.mainloop()
+
+    def _partial_download_or_update_playlist(self, update_mode: bool = False):
+        current_playlist_index = self.combo_playlists.current()
+        if current_playlist_index == -1:
+            logger.error('Список плейлистов пуст!')
+            messagebox.showerror('Ошибка', 'Список плейлистов пуст!')
+            return
+
+        try:
+            playlist = self.playlists[current_playlist_index]
+            current_playlist = self.client.users_playlists(kind=playlist.kind)
+        except YandexMusicError:
+            logger.error('Не удалось подключиться к Yandex!')
+            messagebox.showerror('Ошибка', 'Не удалось подключиться к Yandex!\nПопробуйте позже.')
+            return
+
+        partial_window = tkinter.Toplevel(self.main_window)
+        partial_window.geometry('520x280')
+        try:
+            partial_window.iconbitmap(config.pathes["files"]["icon"])
+        except tkinter.TclError:
+            pass
+
+        partial_window.title('Yandex Music Downloader')
+        partial_window.resizable(width=False, height=False)
+
+        def _close_window():
+            try:
+                del self.partial_downloading_or_updating_tracks[playlist.kind]
+                logger.debug(f'Список частичного скачивания/обновления для плейлиста [{playlist.title}] был удалён.')
+            except KeyError:
+                logger.error(f'Не удалось удалить список частичной загрузки/обновления для плейлиста [{playlist.title}]!')
+            logger.debug(f'Ожидаю завершения потока [{thread.ident}].')
+            thread.join()
+            logger.debug('Закрываю окно.')
+            partial_window.destroy()
+
+        partial_window.protocol("WM_DELETE_WINDOW", _close_window)
+
+        auto = ahocorasick.Automaton()
+        tracks_names = []
+
+        # Запоминаем все названия композиций, для дальнейшего поиска в них
+        def _load_pattern_strings():
+            for index, track in enumerate(current_playlist.tracks):
+                track = track.track
+                track_artists = ', '.join(i['name'] for i in track.artists)
+                track_title = track.title + ("" if track.version is None else f' ({track.version})')
+                track_name = f'{track_artists} - {track_title}'
+
+                if track_name not in tracks_names:
+                    tracks_names.append(track_name)
+
+        thread = threading.Thread(target=_load_pattern_strings)
+        thread.start()
+
+        label_search = tkinter.Label(partial_window, text='Поиск:')
+        label_search.grid(column=0, row=0, sticky=tkinter.E, padx=10, pady=10)
+
+        # Ищем композиции по паттерну
+        def _show_same_tracks_names(pattern: str):
+            logger.debug(f'Начинаю поиск сходства по шаблону [{pattern}].')
+            auto.add_word(pattern.lower(), pattern.lower())
+            auto.make_automaton()
+
+            track_list = []
+            for track_name in tracks_names:
+                for end_ind, found in auto.iter(track_name.lower()):
+                    track_list.append(track_name)
+                    logger.debug(f'Найдено совпадение для трека [{track_name}] в [{track_name}] c шаблоном [{pattern}].')
+
+            track_list.sort()
+            for track_name in track_list:
+                listbox_pattern_tracks.insert(tkinter.END, track_name)
+
+            auto.remove_word(pattern)
+
+        def _entry_callback(value: tkinter.StringVar):
+            listbox_pattern_tracks.delete(0, tkinter.END)
+            _show_same_tracks_names(value.get())
+
+        entry_string_variable = tkinter.StringVar()
+        entry_string_variable.trace_add("write", lambda name, index, mode, sv=entry_string_variable: _entry_callback(sv))
+        entry_search_track = tkinter.Entry(partial_window, width=40, textvariable=entry_string_variable)
+        entry_search_track.grid(column=1, row=0, columnspan=2, sticky=tkinter.EW, padx=10, pady=10)
+
+        frame = tkinter.Frame(partial_window)
+        frame.grid(column=0, row=1, columnspan=3, padx=10, pady=10)
+
+        scrollbar = tkinter.Scrollbar(frame)
+        scrollbar.grid(column=2, row=0, sticky=tkinter.NS)
+
+        listbox_pattern_tracks = tkinter.Listbox(frame, width=80, selectmode="multiple", yscrollcommand=scrollbar.set)
+        listbox_pattern_tracks.grid(column=0, row=0, columnspan=2)
+        scrollbar.config(command=listbox_pattern_tracks.yview)
+
+        def _add_to_list():
+            selected = listbox_pattern_tracks.curselection()
+            if len(selected) != 0:
+                for sel in selected:
+                    selected_item = listbox_pattern_tracks.get(sel)
+
+                    logger.debug(f'Начинаю добавление трека [{selected_item}] в список.')
+                    for track in current_playlist.tracks:
+                        track = track.track
+                        track_artists = ', '.join(i['name'] for i in track.artists)
+                        track_title = track.title + ("" if track.version is None else f' ({track.version})')
+                        track_name = f'{track_artists} - {track_title}'
+
+                        if selected_item == track_name:
+                            if current_playlist.kind not in self.partial_downloading_or_updating_tracks:
+                                self.partial_downloading_or_updating_tracks.update({
+                                    current_playlist.kind: [track]
+                                })
+                                logger.debug(f'Создан список частичного скачивания/обновления для плейлиста '
+                                             f'[{current_playlist.title}]. Был добавлен трек [{track_name}].')
+                                button_download_or_update_tracks['state'] = 'normal'
+                            else:
+                                if track not in self.partial_downloading_or_updating_tracks[current_playlist.kind]:
+                                    self.partial_downloading_or_updating_tracks[current_playlist.kind].append(track)
+                                    logger.debug(f'Трек [{track_name}] добавлен в список для плейлиста '
+                                                 f'[{current_playlist.title}]')
+                                else:
+                                    logger.debug(f'Трек [{track_name}] уже добавлен в список для плейлиста '
+                                                 f'[{current_playlist.title}]')
+                            break
+
+        def _remove_from_list():
+            selected = listbox_pattern_tracks.curselection()
+            if len(selected) != 0:
+                for sel in selected:
+                    selected_item = listbox_pattern_tracks.get(sel)
+
+                    logger.debug(f'Начинаю удаление трека [{selected_item}] из списока.')
+                    for track in self.partial_downloading_or_updating_tracks[current_playlist.kind]:
+                        track_artists = ', '.join(i['name'] for i in track.artists)
+                        track_title = track.title + ("" if track.version is None else f' ({track.version})')
+                        track_name = f'{track_artists} - {track_title}'
+
+                        if selected_item == track_name:
+                            self.partial_downloading_or_updating_tracks[current_playlist.kind].remove(track)
+                            logger.debug(f'Трек [{track_name}] удалён из списка плейлиста [{current_playlist.title}].')
+
+                            if len(self.partial_downloading_or_updating_tracks[current_playlist.kind]) == 0:
+                                del self.partial_downloading_or_updating_tracks[current_playlist.kind]
+                                logger.debug(f'Список для частичного скачивания/обновления для плейлиста '
+                                             f'[{current_playlist.title}] был удалён.')
+                                button_download_or_update_tracks['state'] = 'disable'
+                            break
+
+        button_add_current_track = tkinter.Button(partial_window, text='Добавить в список', width=20,
+                                                  command=_add_to_list)
+        button_add_current_track.grid(column=1, row=2, padx=10, pady=10)
+
+        button_remove_current_track = tkinter.Button(partial_window, text='Удалить из списока', width=20,
+                                                     command=_remove_from_list)
+        button_remove_current_track.grid(column=0, row=2, padx=10, pady=10)
+
+        text = 'Скачать' if not update_mode else 'Обновить'
+        button_download_or_update_tracks = tkinter.Button(partial_window, text=f'{text}', width=20,
+                                                          command=lambda: self._wrapper_download_or_update_tracks(
+                                                              update_mode=update_mode,
+                                                              partial_mode=True
+                                                          ))
+        button_download_or_update_tracks['state'] = 'disable'
+        button_download_or_update_tracks.grid(column=2, row=2, padx=10, pady=10)
 
     def _create_stuff_directories(self):
         """
@@ -496,6 +638,46 @@ class YandexMusicDownloader:
         else:
             logger.debug('Папка для обложек уже сущестует.')
 
+    def _load_all_account_info(self):
+        """
+        Загружаем название плейлистов, обложки и тд. + обновляем состояние всех виджетов
+        :return:
+        """
+        try:
+            # Проверяем введённый токен на валидность
+            try:
+                self.client = Client(token=self.token)
+                self.client.init()
+                logger.debug('Введённый токен валиден, авторизация прошла успешно!')
+            except UnauthorizedError:
+                logger.error('Введен невалидный токен!')
+                messagebox.showerror('Ошибка', 'Введенный токен невалиден!')
+                self.main_window.destroy()
+                return
+
+            self.playlists = self.client.users_playlists_list()
+            self.liked_tracks = self.client.users_likes_tracks()
+
+            # Создаем рабочие директории
+            self._create_stuff_directories()
+
+            # Скачиваем все обложки всех плейлистов
+            thread = threading.Thread(target=self._download_all_playlists_covers)
+            thread.start()
+
+            # Заполняем комбо названиями плейлистов
+            for playlist in self.playlists:
+                self.combo_playlists['values'] = (*self.combo_playlists['values'], f'{playlist.title}')
+            self.combo_playlists.current(0)
+
+            # Изменияем текущую отображающуюся обложку плейлиста
+            self._change_current_playlist_cover()
+
+            # Создание необходимых таблиц в базе данных
+            self._database_create_tables()
+        except NetworkError:
+            messagebox.showerror('Ошибка', 'Не удалось подключиться к Yandex!\nПопробуйте позже.')
+
     def _download_all_playlists_covers(self):
         """
         Скачиваем все обложки всех плейлистов
@@ -506,11 +688,15 @@ class YandexMusicDownloader:
                 if playlist.cover.items_uri is not None:
                     playlist_title = strip_bad_symbols(playlist.title)
                     if not os.path.exists(f'{self.playlists_covers_folder_name}/{playlist_title}.jpg'):
-                        playlist.cover.download(
-                            filename=f'{self.playlists_covers_folder_name}/{playlist_title}.jpg',
-                            size='100x100')
-                        logger.debug(f'Обложка для плейлиста [{playlist_title}] была загружена в '
-                                     f'[{self.playlists_covers_folder_name}/{playlist_title}.jpg].')
+                        try:
+                            playlist.cover.download(
+                                filename=f'{self.playlists_covers_folder_name}/{playlist_title}.jpg',
+                                size='100x100')
+                            logger.debug(f'Обложка для плейлиста [{playlist_title}] была загружена в '
+                                         f'[{self.playlists_covers_folder_name}/{playlist_title}.jpg].')
+                        except NetworkError:
+                            messagebox.showerror('Ошибка', 'Не удалось подключиться к Yandex!\nПопробуйте позже.')
+                            return
                     else:
                         logger.debug(f'Обложка для плейлиста [{playlist_title}] уже существует в '
                                      f'[{self.playlists_covers_folder_name}/{playlist_title}.jpg].')
@@ -521,6 +707,9 @@ class YandexMusicDownloader:
         :return:
         """
         current_playlist_index = self.combo_playlists.current()
+        if current_playlist_index == -1:
+            return
+
         current_playlist = self.playlists[current_playlist_index]
         playlist_title = strip_bad_symbols(current_playlist.title)
 
@@ -553,6 +742,12 @@ class YandexMusicDownloader:
         :param only_add_to_database: признак добавления только в бд
         :return:
         """
+        if len(self.playlists) == 0:
+            messagebox.showinfo('Инфо', 'Список ваших плейлистов пока пуст!\n\n'
+                                        'Создайте плейлист на Яндекс Музыке, добавьте в него нужные композиции и'
+                                        ' попробуйте ещё раз.')
+            return
+
         playlist = self.playlists[self.combo_playlists.current()]
         if playlist.kind not in self.downloading_or_updating_playlists:
             if playlist.track_count == 0:
@@ -610,6 +805,7 @@ class YandexMusicDownloader:
             except tkinter.TclError:
                 pass
             child_window.title(f'{playlist.title}')
+            child_window.protocol("WM_DELETE_WINDOW", lambda: None)
 
             progress_bar = Progressbar(child_window, orient='horizontal', mode='determinate', length=380)
             progress_bar.grid(column=0, row=0, columnspan=2, padx=10, pady=20)
@@ -652,6 +848,9 @@ class YandexMusicDownloader:
                     with open(filename['d'], 'w', encoding='utf-8') as file:
                         pass
 
+                track_count = current_playlist.track_count if not partial_mode else\
+                    len(self.partial_downloading_or_updating_tracks[playlist.kind])
+
                 # Добавляем в словарь номер плейлиста и его обработчик
                 self.downloading_or_updating_playlists.update({playlist.kind: self.DownloaderHelper(
                     progress_bar=progress_bar,
@@ -662,7 +861,7 @@ class YandexMusicDownloader:
                     download_only_new=download_only_new,
                     filenames=filename,
                     playlist_title=playlist_title,
-                    number_tracks_in_playlist=playlist.track_count,
+                    number_tracks_in_playlist=track_count,
                     liked_tracks=self.liked_tracks,
                     add_track_id_to_name=self.check_id_in_name.get(),
                     main_thread_state=lambda: self.main_thread_state,
@@ -712,13 +911,16 @@ class YandexMusicDownloader:
                 child_window.protocol("WM_DELETE_WINDOW", _close_program)
 
                 logger.debug(f'Начало добавления треков в очередь на выполнения для плейлиста [{playlist_title}].')
-                for i in range(math.ceil(current_playlist.track_count / self.chunk_of_tracks)):
+                for i in range(math.ceil(track_count / self.chunk_of_tracks)):
                     number_of_tracks_was_added = 0
                     for j in range(i * self.chunk_of_tracks, (1 + i) * self.chunk_of_tracks):
                         number_of_tracks_was_added = j
-                        if j == current_playlist.track_count:
+                        if j == track_count:
                             break
-                        queue.put(current_playlist.tracks[j].track)
+                        if not partial_mode:
+                            queue.put(current_playlist.tracks[j].track)
+                        else:
+                            queue.put(self.partial_downloading_or_updating_tracks[playlist.kind][j])
                     logger.debug(f'В очередь для плейлиста [{playlist_title}] было добавлено '
                                  f'{number_of_tracks_was_added} треков.')
                     queue.join()
@@ -771,35 +973,40 @@ class YandexMusicDownloader:
                     logger.debug('Завершаю работу.')
                 else:
                     if update_mode:
-                        if self.downloading_or_updating_playlists[playlist.kind].analyzed_and_downloaded_tracks[
-                            'u'] > 0:
+                        if self.downloading_or_updating_playlists[playlist.kind]. \
+                                analyzed_and_downloaded_tracks['u'] > 0:
                             messagebox.showinfo('Инфо',
                                                 f'Обновление треков плейлиста [{current_playlist.title}] закончено!\n'
-                                                f'Обновлено [{self.downloading_or_updating_playlists[playlist.kind].analyzed_and_downloaded_tracks["u"]}] трека(ов).')
+                                                f'Обновлено [{self.downloading_or_updating_playlists[playlist.kind].analyzed_and_downloaded_tracks["u"]}] трека(ов).\n'
+                                                f'Не удалось обновить [{self.downloading_or_updating_playlists[playlist.kind].analyzed_and_downloaded_tracks["e"]}] трека(ов).')
                         else:
                             messagebox.showinfo('Инфо',
                                                 f'На диске не найдено подходящих треков из плейлиста [{current_playlist.title}] для обновления!\n\n'
                                                 f'Попробуйте сначала скачать данный плейлист, либо поставить '
                                                 f'галочку напротив "id трека в названии".')
                     elif only_add_to_database:
-                        if self.downloading_or_updating_playlists[playlist.kind].analyzed_and_downloaded_tracks[
-                            'u'] > 0:
+                        if self.downloading_or_updating_playlists[playlist.kind]. \
+                                analyzed_and_downloaded_tracks['u'] > 0:
                             messagebox.showinfo('Инфо',
-                                                f'Добавление в базу данных треков плейлиста [{current_playlist.title}] закончено!\n'
-                                                f'Добавлено [{self.downloading_or_updating_playlists[playlist.kind].analyzed_and_downloaded_tracks["u"]}] трека(ов).')
+                                                f'Добавление в базу данных треков плейлиста [{current_playlist.title}]'
+                                                f' закончено!\n'
+                                                f'Добавлено [{self.downloading_or_updating_playlists[playlist.kind].analyzed_and_downloaded_tracks["u"]}] трека(ов).\n'
+                                                f'Не удалось добавить [{self.downloading_or_updating_playlists[playlist.kind].analyzed_and_downloaded_tracks["e"]}] трека(ов).')
                         else:
                             messagebox.showinfo('Инфо',
                                                 f'В выбранной базе данных [{self.history_database_path}] уже '
                                                 f'присутствуют все треки из плейлиста [{current_playlist.title}].')
                     else:
-                        if self.downloading_or_updating_playlists[playlist.kind].analyzed_and_downloaded_tracks[
-                            'd'] > 0:
+                        if self.downloading_or_updating_playlists[playlist.kind]. \
+                                analyzed_and_downloaded_tracks['d'] > 0:
                             messagebox.showinfo('Инфо',
                                                 f'Загрузка треков плейлиста [{current_playlist.title}] закончена!\n'
-                                                f'Загружено [{self.downloading_or_updating_playlists[playlist.kind].analyzed_and_downloaded_tracks["d"]}] трека(ов).')
+                                                f'Загружено [{self.downloading_or_updating_playlists[playlist.kind].analyzed_and_downloaded_tracks["d"]}] трека(ов).\n'
+                                                f'Не удалось загрузить [{self.downloading_or_updating_playlists[playlist.kind].analyzed_and_downloaded_tracks["e"]}] трека(ов).')
                         else:
                             messagebox.showinfo('Инфо', f'В плейлисте [{current_playlist.title}] нет новых треков!\n\n'
-                                                        f'Если хотите скачать треки, то уберите галочку с пункта "Скачать новые треки".\n'
+                                                        f'Если хотите скачать треки, то уберите галочку с пункта '
+                                                        f'"Скачать новые треки".\n'
                                                         f'Если хотите, чтобы существующие треки были перезаписаны, '
                                                         f'то поставьте соответствующую галочку в окне конфигурации '
                                                         f'или в меню "Дополнительно".')
@@ -878,7 +1085,7 @@ class YandexMusicDownloader:
 
             self.is_downloading_finished = False
             self.mutex = threading.Lock()
-            self.analyzed_and_downloaded_tracks = {'a': 0, 'd': 0, 'u': 0}
+            self.analyzed_and_downloaded_tracks = {'a': 0, 'd': 0, 'u': 0, 'e': 0}
 
         def change_progress_bar_state(self, download_state: str = ''):
             """
@@ -934,10 +1141,6 @@ class YandexMusicDownloader:
                     # self.mutex.release()
 
                     if return_value:
-                        # self.mutex.acquire()
-                        self.analyzed_and_downloaded_tracks["a"] += 1
-                        # self.mutex.release()
-
                         logger.debug(f'Трек [{track_name}] уже существует в базе '
                                      f'[{self.history_database_path}]. Так как включён мод ONLY_NEW, выхожу.')
                         return
@@ -949,8 +1152,8 @@ class YandexMusicDownloader:
                     logger.error(f'Трек [{track_name}] недоступен.')
                     # self.mutex.acquire()
                     with open(self.filenames['e'], 'a', encoding='utf-8') as file:
-                        file.write(f"{track_name} - Трек недоступен\n")
-                    self.analyzed_and_downloaded_tracks["a"] += 1
+                        file.write(f"{track_name} ~ Трек недоступен\n")
+                    self.analyzed_and_downloaded_tracks["e"] += 1
                     # self.mutex.release()
                     return
 
@@ -983,8 +1186,8 @@ class YandexMusicDownloader:
                             logger.debug(
                                 f'Трек [{track_name}] был добавлен в базу данных [{self.history_database_path}].')
 
-                        with open(self.filenames['e'], 'a', encoding='utf-8') as file:
-                            file.write(f"{track_name} - Трек уже существует\n")
+                        # with open(self.filenames['e'], 'a', encoding='utf-8') as file:
+                        #     file.write(f"{track_name} - Трек уже существует\n")
                         # self.mutex.release()
                         track_exists = True
                         break
@@ -999,10 +1202,10 @@ class YandexMusicDownloader:
                         track.download(filename=full_track_name, codec=codec, bitrate_in_kbps=bitrate)
                         logger.debug(f'Трек [{track_name}] был скачан.')
 
-                        # self.mutex.acquire()
+                        self.mutex.acquire()
                         with open(f'{self.filenames["d"]}', 'a', encoding='utf-8') as file:
                             file.write(f'{self.analyzed_and_downloaded_tracks["d"]}] {track_name}\n')
-                        # self.mutex.release()
+                        self.mutex.release()
 
                         cover_filename = os.path.abspath(f'{self.download_folder_path}/covers/{track_name}.jpg')
                         track.download_cover(cover_filename, size="300x300")
@@ -1039,8 +1242,9 @@ class YandexMusicDownloader:
                             logger.debug(f'Трек [{track_name}] уже присутствует в базе данных по пути '
                                          f'[{self.history_database_path}].')
 
+                        self.mutex.acquire()
                         self.analyzed_and_downloaded_tracks["d"] += 1
-                        # self.mutex.release()
+                        self.mutex.release()
                         was_track_downloaded = True
                         break
                     except (YandexMusicError, TimeoutError):
@@ -1051,15 +1255,19 @@ class YandexMusicDownloader:
                         logger.error(f'Не удалось скачать трек [{track_name}].')
                         # self.mutex.acquire()
                         with open(self.filenames['e'], 'a', encoding='utf-8') as file:
-                            file.write(f"{track_name} - Не удалось скачать трек\n")
+                            file.write(f"{track_name} ~ Не удалось скачать трек\n")
+                        self.analyzed_and_downloaded_tracks["e"] += 1
                         # self.mutex.release()
 
-                # self.mutex.acquire()
-                self.analyzed_and_downloaded_tracks["a"] += 1
-                # self.mutex.release()
             except IOError:
                 logger.error(f'Ошибка при попытке записи в один из файлов [{self.filenames["e"]}] или '
                              f'[{self.filenames["d"]}].')
+                self.analyzed_and_downloaded_tracks["e"] += 1
+
+            finally:
+                # self.mutex.acquire()
+                self.analyzed_and_downloaded_tracks["a"] += 1
+                # self.mutex.release()
 
         def _is_track_in_database(self, track: Track) -> bool:
             """
@@ -1078,11 +1286,17 @@ class YandexMusicDownloader:
             track_name = strip_bad_symbols(f"{track_artists} - {track_title}{track_id}", soft_mode=True)
             logger.debug(f'Ищу трек [{track_name}] в базе [{self.history_database_path}].')
 
-            with sqlite3.connect(self.history_database_path) as con:
-                cursor = con.cursor()
-                request = f"SELECT * FROM {_playlist_name} WHERE track_id == {track.id}; "
-                result = cursor.execute(request)
-                return True if result.fetchone() else False
+            try:
+                with sqlite3.connect(self.history_database_path) as con:
+                    cursor = con.cursor()
+                    request = f"SELECT * FROM {_playlist_name} WHERE track_id == ? " \
+                              f"OR (track_name == ? " \
+                              f"AND artist_name == ?);"
+                    result = cursor.execute(request, [track.id, track_title, track_artists])
+                    return True if result.fetchone() else False
+            except Exception:
+                logger.error('Вылет в проверке!')
+                return True
 
         def _add_track_to_database(self, track: Track, codec: str, bit_rate: int, is_favorite: int):
             """
@@ -1147,6 +1361,21 @@ class YandexMusicDownloader:
         @staticmethod
         def _write_track_metadata(full_track_name, track_title, artists, albums, genre, album_artists, year,
                                   cover_filename, track_position, disk_number, lyrics):
+            """
+            Функция для редактирования метаданных трека
+            :param full_track_name: путь к треку
+            :param track_title: название трека
+            :param artists: исполнители
+            :param albums: альбомы
+            :param genre: жанр
+            :param album_artists: исполнители альбома
+            :param year: год
+            :param cover_filename: путь к обложке
+            :param track_position: номер трека в альбоме
+            :param disk_number: номер диска (если есть)
+            :param lyrics: текст песни (если есть)
+            :return:
+            """
             file = File(full_track_name)
             with open(cover_filename, 'rb') as cover_file:
                 file.update({
@@ -1186,6 +1415,14 @@ class YandexMusicDownloader:
             if self.add_track_id_to_name:
                 track_id = f' [{track.id}]'
             track_name = strip_bad_symbols(f"{track_artists} - {track_title}{track_id}", soft_mode=True)
+
+            if not track.available:
+                logger.error(f'Трек [{track_name}] недоступен!')
+                # self.mutex.acquire()
+                self.analyzed_and_downloaded_tracks["a"] += 1
+                self.analyzed_and_downloaded_tracks["e"] += 1
+                # self.mutex.release()
+                return
 
             # self.mutex.acquire()
             result = self._is_track_in_database(track)
@@ -1231,6 +1468,7 @@ class YandexMusicDownloader:
             if not track.available:
                 logger.error(f'Трек [{track_name}] недоступен.')
                 self.analyzed_and_downloaded_tracks["a"] += 1
+                self.analyzed_and_downloaded_tracks["e"] += 1
                 return
 
             for info in sorted(track.get_download_info(), key=lambda x: x['bitrate_in_kbps'], reverse=True):
