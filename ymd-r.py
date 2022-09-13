@@ -29,6 +29,7 @@ import webbrowser
 from queue import Queue, Empty
 from PIL import Image, ImageTk
 
+import time
 import ahocorasick
 
 from mutagen import File
@@ -488,39 +489,51 @@ class YandexMusicDownloader:
                 logger.debug(f'Список частичного скачивания/обновления для плейлиста [{playlist.title}] был удалён.')
             except KeyError:
                 logger.error(f'Не удалось удалить список частичной загрузки/обновления для плейлиста [{playlist.title}]!')
-            # logger.debug(f'Ожидаю завершения потока [{thread.ident}].')
-            # thread.join()
-            # logger.debug('Закрываю окно.')
+            logger.debug(f'Ожидаю завершения потока [{thread.ident}]')
+            thread.join()
+            logger.debug('Закрываю окно.')
             partial_window.destroy()
 
         partial_window.protocol("WM_DELETE_WINDOW", _close_window)
 
+        # Код загрузки данных Имя исполнителя - Название композиции в списко, для дальнейшего сравнивания
+        # Для варианта с pyahocorasick
+
         # auto = ahocorasick.Automaton()
-        # tracks_names = []
-        #
-        # def _load_pattern_strings():
-        #     for index, track in enumerate(current_playlist.tracks):
-        #         track = track.track
-        #         track_artists = ', '.join(i['name'] for i in track.artists)
-        #         track_title = track.title + ("" if track.version is None else f' ({track.version})')
-        #         track_name = f'{track_artists} - {track_title}'
-        #
-        #         if track_name not in tracks_names:
-        #             tracks_names.append(track_name)
-        #
-        # thread = threading.Thread(target=_load_pattern_strings)
-        # thread.start()
+        tracks_names = []
+
+        def _load_pattern_strings():
+            for track in current_playlist.tracks:
+                track = track.track
+                track_artists = ', '.join(i['name'] for i in track.artists)
+                track_title = track.title + ("" if track.version is None else f' ({track.version})')
+                track_name = f'{track_artists} - {track_title}'
+
+                if track_name not in tracks_names:
+                    tracks_names.append(track_name)
+
+            tracks_names.sort()
+            time.sleep(0.1)
+
+            for name in tracks_names:
+                listbox_pattern_tracks.insert(tkinter.END, name)
+
+        thread = threading.Thread(target=_load_pattern_strings)
+        thread.start()
 
         label_search = tkinter.Label(partial_window, text='Поиск:')
         label_search.grid(column=0, row=0, sticky=tkinter.E, padx=10, pady=10)
 
         def _show_same_tracks_names(pattern: str):
             logger.debug(f'Начинаю поиск сходства по шаблону [{pattern}].')
+            track_list = []
+
+            # Альтернативный вариант поиска подстроки через pyahocorasick
+            # По времени +- одинаково с in вышло на примере плейлиста с 1500 композиций
 
             # auto.add_word(pattern.lower(), pattern.lower())
             # auto.make_automaton()
             #
-            # track_list = []
             # for track_name in tracks_names:
             #     for end_ind, found in auto.iter(track_name.lower()):
             #         track_list.append(track_name)
@@ -531,7 +544,6 @@ class YandexMusicDownloader:
             #
             # auto.remove_word(pattern)
 
-            track_list = []
             for track in current_playlist.tracks:
                 track = track.track
                 track_artists = ', '.join(i['name'] for i in track.artists)
@@ -539,17 +551,22 @@ class YandexMusicDownloader:
                 track_name = f'{track_artists} - {track_title}'
 
                 if pattern.lower() in track_title.lower():
-                    logger.debug(f'Найдено совпадение для трека [{track_name}] в [{track_title}] c шаблоном [{pattern}].')
+                    # logger.debug(f'Найдено совпадение для трека [{track_name}] в [{track_title}] c шаблоном '
+                    #              f'[{pattern}].')
                     track_list.append(track_name)
                     continue
 
                 if pattern.lower() in track_artists.lower():
-                    logger.debug(f'Найдено совпадение для трека [{track_name}] в [{track_artists}] c шаблоном [{pattern}].')
+                    # logger.debug(f'Найдено совпадение для трека [{track_name}] в [{track_artists}] c шаблоном '
+                    #              f'[{pattern}].')
                     track_list.append(track_name)
 
             track_list.sort()
             for track_name in track_list:
                 listbox_pattern_tracks.insert(tkinter.END, track_name)
+
+            text1 = label_results['text'].split(':')[0]
+            label_results.config(text=f'{text1}: {len(track_list)}')
 
         def _entry_callback(value: tkinter.StringVar):
             listbox_pattern_tracks.delete(0, tkinter.END)
@@ -663,7 +680,10 @@ class YandexMusicDownloader:
             label_count = tkinter.Label(show_window, text=f'В списке [{len(track_list)}] трека(ов).')
             label_count.grid(column=1, row=2)
 
-        button_clear_selected_tracks = tkinter.Button(partial_window, text='Отчистить всё', width=20,
+        label_results = tkinter.Label(partial_window, text=f'Найдено совпадений: {current_playlist.track_count}')
+        label_results.grid(column=1, row=2, padx=10, pady=10)
+
+        button_clear_selected_tracks = tkinter.Button(partial_window, text='Отчистить выделеные', width=20,
                                                       command=_clear_all_selected)
         button_clear_selected_tracks.grid(column=0, row=2, padx=10, pady=10)
 
@@ -682,7 +702,8 @@ class YandexMusicDownloader:
         button_download_or_update_tracks = tkinter.Button(partial_window, text=f'{text}', width=20,
                                                           command=lambda: self._wrapper_download_or_update_tracks(
                                                               update_mode=update_mode,
-                                                              partial_mode=True
+                                                              partial_mode=True,
+                                                              partial_playlist_index=current_playlist_index
                                                           ))
         button_download_or_update_tracks['state'] = 'disable'
         button_download_or_update_tracks.grid(column=2, row=3, padx=10, pady=10)
@@ -810,11 +831,12 @@ class YandexMusicDownloader:
         logger.debug(f'Текущая обложка изменена на [{playlist_title}].')
 
     def _wrapper_download_or_update_tracks(self, update_mode: bool = False, partial_mode: bool = False,
-                                           only_add_to_database: bool = False):
+                                           partial_playlist_index: int = 0, only_add_to_database: bool = False):
         """
         Обработчик, который вызывается при нажатии на кнопку скачать или обновить
         :param update_mode: признак обновления метаданных
         :param partial_mode: признак выборочного скачивания
+        :param partial_playlist_index: индекс плейлиста в списке плейлистов
         :param only_add_to_database: признак добавления только в бд
         :return:
         """
@@ -824,14 +846,16 @@ class YandexMusicDownloader:
                                         ' попробуйте ещё раз.')
             return
 
-        playlist = self.playlists[self.combo_playlists.current()]
+        playlist_index = self.combo_playlists.current() if not partial_mode else partial_playlist_index
+        playlist = self.playlists[playlist_index]
+
         if playlist.kind not in self.downloading_or_updating_playlists:
             if playlist.track_count == 0:
                 messagebox.showinfo('Инфо', 'Данный плейлист пуст!')
                 return
 
             thread = threading.Thread(target=self._download_or_update_all_tracks, args=(
-                self.combo_playlists.current(), self.check_state_history.get(), update_mode, partial_mode,
+                playlist_index, self.check_state_history.get(), update_mode, partial_mode,
                 only_add_to_database,))
 
             info = 'скачивания'
