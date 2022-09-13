@@ -454,6 +454,18 @@ class YandexMusicDownloader:
 
         try:
             playlist = self.playlists[current_playlist_index]
+            if playlist.kind not in self.partial_downloading_or_updating_tracks:
+                self.partial_downloading_or_updating_tracks.update({
+                    playlist.kind: []
+                })
+                logger.debug(f'Создан список частичного скачивания/обновления для плейлиста '
+                             f'[{playlist.title}].')
+            else:
+                messagebox.showwarning('Предупреждение', f'Данное окно для частичной загрузки/обновления треков '
+                                                         f'для плейтиста [{playlist.title}] уже открыто!\n'
+                                                         f'Пожалуйста, закройте сначала предыдущее окно перед '
+                                                         f'открытием нового!')
+                return
             current_playlist = self.client.users_playlists(kind=playlist.kind)
         except YandexMusicError:
             logger.error('Не удалось подключиться к Yandex!')
@@ -461,13 +473,13 @@ class YandexMusicDownloader:
             return
 
         partial_window = tkinter.Toplevel(self.main_window)
-        partial_window.geometry('520x280')
+        partial_window.geometry('520x320')
         try:
             partial_window.iconbitmap(config.pathes["files"]["icon"])
         except tkinter.TclError:
             pass
 
-        partial_window.title('Yandex Music Downloader')
+        partial_window.title(f'Yandex Music Downloader [{playlist.title}]')
         partial_window.resizable(width=False, height=False)
 
         def _close_window():
@@ -476,50 +488,68 @@ class YandexMusicDownloader:
                 logger.debug(f'Список частичного скачивания/обновления для плейлиста [{playlist.title}] был удалён.')
             except KeyError:
                 logger.error(f'Не удалось удалить список частичной загрузки/обновления для плейлиста [{playlist.title}]!')
-            logger.debug(f'Ожидаю завершения потока [{thread.ident}].')
-            thread.join()
-            logger.debug('Закрываю окно.')
+            # logger.debug(f'Ожидаю завершения потока [{thread.ident}].')
+            # thread.join()
+            # logger.debug('Закрываю окно.')
             partial_window.destroy()
 
         partial_window.protocol("WM_DELETE_WINDOW", _close_window)
 
-        auto = ahocorasick.Automaton()
-        tracks_names = []
+        # auto = ahocorasick.Automaton()
+        # tracks_names = []
+        #
+        # def _load_pattern_strings():
+        #     for index, track in enumerate(current_playlist.tracks):
+        #         track = track.track
+        #         track_artists = ', '.join(i['name'] for i in track.artists)
+        #         track_title = track.title + ("" if track.version is None else f' ({track.version})')
+        #         track_name = f'{track_artists} - {track_title}'
+        #
+        #         if track_name not in tracks_names:
+        #             tracks_names.append(track_name)
+        #
+        # thread = threading.Thread(target=_load_pattern_strings)
+        # thread.start()
 
-        # Запоминаем все названия композиций, для дальнейшего поиска в них
-        def _load_pattern_strings():
-            for index, track in enumerate(current_playlist.tracks):
+        label_search = tkinter.Label(partial_window, text='Поиск:')
+        label_search.grid(column=0, row=0, sticky=tkinter.E, padx=10, pady=10)
+
+        def _show_same_tracks_names(pattern: str):
+            logger.debug(f'Начинаю поиск сходства по шаблону [{pattern}].')
+
+            # auto.add_word(pattern.lower(), pattern.lower())
+            # auto.make_automaton()
+            #
+            # track_list = []
+            # for track_name in tracks_names:
+            #     for end_ind, found in auto.iter(track_name.lower()):
+            #         track_list.append(track_name)
+            #
+            # track_list.sort()
+            # for track_name in track_list:
+            #     listbox_pattern_tracks.insert(tkinter.END, track_name)
+            #
+            # auto.remove_word(pattern)
+
+            track_list = []
+            for track in current_playlist.tracks:
                 track = track.track
                 track_artists = ', '.join(i['name'] for i in track.artists)
                 track_title = track.title + ("" if track.version is None else f' ({track.version})')
                 track_name = f'{track_artists} - {track_title}'
 
-                if track_name not in tracks_names:
-                    tracks_names.append(track_name)
-
-        thread = threading.Thread(target=_load_pattern_strings)
-        thread.start()
-
-        label_search = tkinter.Label(partial_window, text='Поиск:')
-        label_search.grid(column=0, row=0, sticky=tkinter.E, padx=10, pady=10)
-
-        # Ищем композиции по паттерну
-        def _show_same_tracks_names(pattern: str):
-            logger.debug(f'Начинаю поиск сходства по шаблону [{pattern}].')
-            auto.add_word(pattern.lower(), pattern.lower())
-            auto.make_automaton()
-
-            track_list = []
-            for track_name in tracks_names:
-                for end_ind, found in auto.iter(track_name.lower()):
+                if pattern.lower() in track_title.lower():
+                    logger.debug(f'Найдено совпадение для трека [{track_name}] в [{track_title}] c шаблоном [{pattern}].')
                     track_list.append(track_name)
-                    logger.debug(f'Найдено совпадение для трека [{track_name}] в [{track_name}] c шаблоном [{pattern}].')
+                    continue
+
+                if pattern.lower() in track_artists.lower():
+                    logger.debug(f'Найдено совпадение для трека [{track_name}] в [{track_artists}] c шаблоном [{pattern}].')
+                    track_list.append(track_name)
 
             track_list.sort()
             for track_name in track_list:
                 listbox_pattern_tracks.insert(tkinter.END, track_name)
-
-            auto.remove_word(pattern)
 
         def _entry_callback(value: tkinter.StringVar):
             listbox_pattern_tracks.delete(0, tkinter.END)
@@ -543,6 +573,7 @@ class YandexMusicDownloader:
         def _add_to_list():
             selected = listbox_pattern_tracks.curselection()
             if len(selected) != 0:
+                was_added = False
                 for sel in selected:
                     selected_item = listbox_pattern_tracks.get(sel)
 
@@ -554,26 +585,25 @@ class YandexMusicDownloader:
                         track_name = f'{track_artists} - {track_title}'
 
                         if selected_item == track_name:
-                            if current_playlist.kind not in self.partial_downloading_or_updating_tracks:
-                                self.partial_downloading_or_updating_tracks.update({
-                                    current_playlist.kind: [track]
-                                })
-                                logger.debug(f'Создан список частичного скачивания/обновления для плейлиста '
-                                             f'[{current_playlist.title}]. Был добавлен трек [{track_name}].')
-                                button_download_or_update_tracks['state'] = 'normal'
+                            if track not in self.partial_downloading_or_updating_tracks[current_playlist.kind]:
+                                if len(self.partial_downloading_or_updating_tracks[playlist.kind]) == 0:
+                                    button_download_or_update_tracks['state'] = 'normal'
+
+                                self.partial_downloading_or_updating_tracks[current_playlist.kind].append(track)
+                                logger.debug(f'Трек [{track_name}] добавлен в список для плейлиста '
+                                             f'[{current_playlist.title}]')
                             else:
-                                if track not in self.partial_downloading_or_updating_tracks[current_playlist.kind]:
-                                    self.partial_downloading_or_updating_tracks[current_playlist.kind].append(track)
-                                    logger.debug(f'Трек [{track_name}] добавлен в список для плейлиста '
-                                                 f'[{current_playlist.title}]')
-                                else:
-                                    logger.debug(f'Трек [{track_name}] уже добавлен в список для плейлиста '
-                                                 f'[{current_playlist.title}]')
+                                logger.debug(f'Трек [{track_name}] уже добавлен в список для плейлиста '
+                                             f'[{current_playlist.title}]')
+                            was_added = True
                             break
+                if was_added:
+                    messagebox.showinfo('Инфо', 'Треки были добавлены в список.')
 
         def _remove_from_list():
             selected = listbox_pattern_tracks.curselection()
             if len(selected) != 0:
+                was_removed = False
                 for sel in selected:
                     selected_item = listbox_pattern_tracks.get(sel)
 
@@ -588,19 +618,65 @@ class YandexMusicDownloader:
                             logger.debug(f'Трек [{track_name}] удалён из списка плейлиста [{current_playlist.title}].')
 
                             if len(self.partial_downloading_or_updating_tracks[current_playlist.kind]) == 0:
-                                del self.partial_downloading_or_updating_tracks[current_playlist.kind]
-                                logger.debug(f'Список для частичного скачивания/обновления для плейлиста '
-                                             f'[{current_playlist.title}] был удалён.')
                                 button_download_or_update_tracks['state'] = 'disable'
+                            was_removed = True
                             break
+                if was_removed:
+                    messagebox.showinfo('Инфо', 'Треки были удалены из списока.')
+
+        def _clear_all_selected():
+            listbox_pattern_tracks.select_clear(0, tkinter.END)
+
+        def _show_list():
+            show_window = tkinter.Toplevel(partial_window)
+            show_window.geometry('520x240')
+            try:
+                show_window.iconbitmap(config.pathes["files"]["icon"])
+            except tkinter.TclError:
+                pass
+
+            show_window.title(f'Список для [{playlist.title}]')
+            show_window.resizable(width=False, height=False)
+
+            frame1 = tkinter.Frame(show_window)
+            frame1.grid(column=0, row=1, columnspan=3, padx=10, pady=10)
+
+            scrollbar1 = tkinter.Scrollbar(frame1)
+            scrollbar1.grid(column=2, row=0, sticky=tkinter.NS)
+
+            listbox_pattern_tracks1 = tkinter.Listbox(frame1, width=80, selectmode="multiple",
+                                                      yscrollcommand=scrollbar1.set)
+            listbox_pattern_tracks1.grid(column=0, row=0, columnspan=2)
+            scrollbar1.config(command=listbox_pattern_tracks1.yview)
+
+            track_list = []
+            for track in self.partial_downloading_or_updating_tracks[playlist.kind]:
+                track_artists = ', '.join(i['name'] for i in track.artists)
+                track_title = track.title + ("" if track.version is None else f' ({track.version})')
+                track_name = f'{track_artists} - {track_title}'
+                track_list.append(track_name)
+
+            track_list.sort()
+            for track_name in track_list:
+                listbox_pattern_tracks1.insert(tkinter.END, track_name)
+
+            label_count = tkinter.Label(show_window, text=f'В списке [{len(track_list)}] трека(ов).')
+            label_count.grid(column=1, row=2)
+
+        button_clear_selected_tracks = tkinter.Button(partial_window, text='Отчистить всё', width=20,
+                                                      command=_clear_all_selected)
+        button_clear_selected_tracks.grid(column=0, row=2, padx=10, pady=10)
+
+        button_show_list = tkinter.Button(partial_window, text='Показать список', width=20, command=_show_list)
+        button_show_list.grid(column=2, row=2, padx=10, pady=10)
 
         button_add_current_track = tkinter.Button(partial_window, text='Добавить в список', width=20,
                                                   command=_add_to_list)
-        button_add_current_track.grid(column=1, row=2, padx=10, pady=10)
+        button_add_current_track.grid(column=1, row=3, padx=10, pady=10)
 
         button_remove_current_track = tkinter.Button(partial_window, text='Удалить из списока', width=20,
                                                      command=_remove_from_list)
-        button_remove_current_track.grid(column=0, row=2, padx=10, pady=10)
+        button_remove_current_track.grid(column=0, row=3, padx=10, pady=10)
 
         text = 'Скачать' if not update_mode else 'Обновить'
         button_download_or_update_tracks = tkinter.Button(partial_window, text=f'{text}', width=20,
@@ -609,7 +685,7 @@ class YandexMusicDownloader:
                                                               partial_mode=True
                                                           ))
         button_download_or_update_tracks['state'] = 'disable'
-        button_download_or_update_tracks.grid(column=2, row=2, padx=10, pady=10)
+        button_download_or_update_tracks.grid(column=2, row=3, padx=10, pady=10)
 
     def _create_stuff_directories(self):
         """
