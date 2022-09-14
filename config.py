@@ -14,21 +14,21 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
-number_of_workers = 5
-chunk_of_tracks = 20
+NUMBER_OF_WORKERS = 5
+CHUNK_OF_TRACKS = 20
 
-pathes = {'stuff': 'stuff'}
-pathes = {
+paths = {'stuff': 'stuff'}
+paths = {
     'dirs': {
-        'stuff': f'{pathes["stuff"]}',
+        'stuff': f'{paths["stuff"]}',
         'download': 'download',
-        'playlists_covers': f'{pathes["stuff"]}/playlists_covers'
+        'playlists_covers': f'{paths["stuff"]}/playlists_covers'
     },
 
     'files': {
         'history': 'history.db',
-        'default_playlist_cover': f'{pathes["stuff"]}/default_playlist_cover.jpg',
-        'icon': f'{pathes["stuff"]}/icon.ico',
+        'default_playlist_cover': f'{paths["stuff"]}/default_playlist_cover.jpg',
+        'icon': f'{paths["stuff"]}/icon.ico',
         'log': 'logging.log'
     }
 }

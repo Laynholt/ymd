@@ -1,4 +1,20 @@
 """
+Copyright 2022 laynholt
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+"""
+
+"""
 Источники:
     1) https://github.com/AlexxIT/YandexStation/blob/master/custom_components/yandex_station/core/yandex_session.py
     2) https://github.com/MarshalX/yandex-music-token
@@ -7,7 +23,7 @@
 """
 
 import re
-from aiohttp import ClientSession
+from aiohttp import ClientSession, ClientConnectorError
 
 
 class YandexSession:
@@ -19,6 +35,7 @@ class YandexSession:
         """
         Класс для возвращаемого значения от Яндекс сессии
         """
+
         def __init__(self):
             self.resp = {"error": None, "token": None}
 
@@ -127,24 +144,29 @@ class YandexSession:
         """
         Получаем токен ЯМ по X-токену
         """
-        await self._login_username()
-        if self.login_response.get_error() is None:
-            await self._login_password()
+        try:
+            await self._login_username()
             if self.login_response.get_error() is None:
-                payload = {
-                    # Thanks to https://github.com/MarshalX/yandex-music-api/
-                    'client_secret': '53bc75238f0c4d08a118e51fe9203300',
-                    'client_id': '23cabbbdc6cd418abb4b39c32c41195d',
-                    'grant_type': 'x-token',
-                    'access_token': self.x_token
-                }
-                r = await self.session.post(
-                    'https://oauth.mobile.yandex.net/1/token', data=payload
-                )
-                resp = await r.json()
-                if 'access_token' in resp:
-                    self.login_response.set_token(resp['access_token'])
-                else:
-                    self.login_response.set_error('Не удалось получить токен!')
-        await self.session.close()
-        return self.login_response
+                await self._login_password()
+                if self.login_response.get_error() is None:
+                    payload = {
+                        # Thanks to https://github.com/MarshalX/yandex-music-api/
+                        'client_secret': '53bc75238f0c4d08a118e51fe9203300',
+                        'client_id': '23cabbbdc6cd418abb4b39c32c41195d',
+                        'grant_type': 'x-token',
+                        'access_token': self.x_token
+                    }
+                    r = await self.session.post(
+                        'https://oauth.mobile.yandex.net/1/token', data=payload
+                    )
+                    resp = await r.json()
+                    if 'access_token' in resp:
+                        self.login_response.set_token(resp['access_token'])
+                    else:
+                        self.login_response.set_error('Не удалось получить токен!')
+        except ClientConnectorError:
+            self.login_response.set_error('Не удалось подключиться к Яндексу!\n\nПроверьте подключение к Интернету '
+                                          'или попробуйте позже.')
+        finally:
+            await self.session.close()
+            return self.login_response
