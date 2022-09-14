@@ -121,7 +121,7 @@ class YandexMusicDownloader:
                 logger.error(f'Не удалось открыть файл [{config_filename}] для чтения!')
 
         configuration_window = tkinter.Tk()
-        configuration_window.geometry('550x220')
+        configuration_window.geometry('550x255')
         try:
             configuration_window.iconbitmap(config.paths["files"]["icon"])
         except tkinter.TclError:
@@ -131,19 +131,30 @@ class YandexMusicDownloader:
         configuration_window.resizable(width=False, height=False)
 
         labelframe_required = LabelFrame(configuration_window, text='Обязательное заполнение')
-        labelframe_required.grid(column=0, row=0, columnspan=5, rowspan=2, padx=10, pady=10)
+        labelframe_required.grid(column=0, row=0, columnspan=5, rowspan=3, padx=10, pady=10)
 
         label_enter_token = tkinter.Label(labelframe_required, text='Введите токен:')
         label_enter_token.grid(column=0, row=0, padx=5, pady=5)
 
-        entry_enter_token = tkinter.Entry(labelframe_required, width=68)
+        entry_enter_token = tkinter.Entry(labelframe_required, width=68, show="*")
         entry_enter_token.delete(0, tkinter.END)
         if len(self.token):
             entry_enter_token.insert(0, self.token)
         entry_enter_token.grid(column=1, row=0, columnspan=4, padx=5, pady=5)
 
+        def _change_entry_show_mode():
+            show_mode = "*" if check_state_entry.get() else ""
+            entry_enter_token.config(show=show_mode)
+
+        check_state_entry = tkinter.BooleanVar()
+        check_state_entry.set(True)
+        checkbutton_entry_password = tkinter.Checkbutton(labelframe_required, text='Скрыть токен',
+                                                         var=check_state_entry,
+                                                         command=_change_entry_show_mode)
+        checkbutton_entry_password.grid(column=1, row=1, padx=5, pady=5)
+
         label_login_password = tkinter.Label(labelframe_required, text='Либо авторизуйтесь через логин и пароль:')
-        label_login_password.grid(column=0, row=1, columnspan=2, padx=5, pady=5)
+        label_login_password.grid(column=0, row=2, columnspan=2, padx=5, pady=5)
 
         # Обработчик гиперссылки
         def _callback(url):
@@ -155,7 +166,7 @@ class YandexMusicDownloader:
             :return:
             """
             auth_window = tkinter.Toplevel(configuration_window)
-            auth_window.geometry('455x250')
+            auth_window.geometry('455x280')
             try:
                 auth_window.iconbitmap(config.paths["files"]["icon"])
             except tkinter.TclError:
@@ -186,8 +197,19 @@ class YandexMusicDownloader:
             label_password = tkinter.Label(auth_window, text='Пароль:')
             label_password.grid(column=0, row=6, sticky=tkinter.E, padx=5, pady=5)
 
-            entry_password = tkinter.Entry(auth_window, width=25)
+            entry_password = tkinter.Entry(auth_window, width=25, show="*")
             entry_password.grid(column=1, row=6, padx=5, pady=5)
+
+            def _change_entry_show_mode1():
+                show_mode = "*" if check_state_entry1.get() else ""
+                entry_password.config(show=show_mode)
+
+            check_state_entry1 = tkinter.BooleanVar()
+            check_state_entry1.set(True)
+            checkbutton_entry_password1 = tkinter.Checkbutton(auth_window, text='Скрыть пароль',
+                                                              var=check_state_entry1,
+                                                              command=_change_entry_show_mode1)
+            checkbutton_entry_password1.grid(column=1, row=7, padx=5, pady=5)
 
             def _auth():
 
@@ -222,10 +244,10 @@ class YandexMusicDownloader:
                 auth_window.destroy()
 
             button_auth = tkinter.Button(auth_window, text='Войти', command=_auth, width=20)
-            button_auth.grid(column=1, row=7, padx=5, pady=5)
+            button_auth.grid(column=1, row=8, padx=5, pady=5)
 
         button_login_password = tkinter.Button(labelframe_required, text='Авторизоваться', command=_authorization)
-        button_login_password.grid(column=2, row=1, padx=5, pady=5)
+        button_login_password.grid(column=2, row=2, padx=5, pady=5)
 
         label_how_get_token = tkinter.Label(labelframe_required, text='Как получить токен?', fg='blue', cursor='hand2')
         label_how_get_token.grid(column=4, row=1, sticky=tkinter.E, padx=5, pady=5)
@@ -234,7 +256,7 @@ class YandexMusicDownloader:
                                                                    "discussions/513#discussioncomment-2729781"))
 
         labelframe_optional = LabelFrame(configuration_window, text='Опциональное заполнение')
-        labelframe_optional.grid(column=0, row=2, columnspan=5, rowspan=2, padx=10, pady=10)
+        labelframe_optional.grid(column=0, row=3, columnspan=5, rowspan=2, padx=10, pady=10)
 
         # Выбираем файл базы данных
         def _choose_database():
@@ -247,7 +269,7 @@ class YandexMusicDownloader:
             logger.debug(f'Файл базы данных установлен на: [{self.history_database_path}].')
 
         button_history = tkinter.Button(labelframe_optional, text='Указать БД', command=_choose_database)
-        button_history.grid(column=0, row=2, padx=5, pady=5)
+        button_history.grid(column=0, row=3, padx=5, pady=5)
 
         # Выбираем папку, куда качать
         def _choose_download():
@@ -257,13 +279,13 @@ class YandexMusicDownloader:
             logger.debug(f'Папка загрузки установлена на: [{self.download_folder_path}].')
 
         button_download = tkinter.Button(labelframe_optional, text='Указать папку Download', command=_choose_download)
-        button_download.grid(column=1, row=2, padx=5, pady=5)
+        button_download.grid(column=1, row=3, padx=5, pady=5)
 
         check_is_rewritable = tkinter.BooleanVar()
         check_is_rewritable.set(self.is_rewritable)
         checkbutton_rewritable = Checkbutton(labelframe_optional, text='Перезаписывать существующие композиции',
                                              var=check_is_rewritable)
-        checkbutton_rewritable.grid(column=2, row=2, padx=5, pady=5)
+        checkbutton_rewritable.grid(column=2, row=3, padx=5, pady=5)
 
         # Экшен, для установки значений по умолчанию
         def _reset_all():
@@ -277,7 +299,7 @@ class YandexMusicDownloader:
             check_is_rewritable.set(self.is_rewritable)
 
         button_reset = tkinter.Button(configuration_window, text='Сбросить всё', command=_reset_all)
-        button_reset.grid(column=0, row=4, padx=10, pady=5, sticky=tkinter.W)
+        button_reset.grid(column=0, row=5, padx=10, pady=5, sticky=tkinter.W)
 
         is_continue = False
 
@@ -307,7 +329,7 @@ class YandexMusicDownloader:
             configuration_window.destroy()
 
         button_continue = tkinter.Button(configuration_window, text='Продолжить', command=_continue_action)
-        button_continue.grid(column=4, row=4, padx=10, pady=5, sticky=tkinter.E)
+        button_continue.grid(column=4, row=5, padx=10, pady=5, sticky=tkinter.E)
 
         configuration_window.mainloop()
         return is_continue
