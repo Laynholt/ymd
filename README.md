@@ -23,9 +23,9 @@
 ```
 
 # Скриншоты
-![image](https://user-images.githubusercontent.com/41357381/189773511-5c69ef51-8a7b-49dd-ad60-10986e4af61a.png)
+![image](https://user-images.githubusercontent.com/41357381/190263714-e7ddb04d-9ee0-438e-8a4b-bb2194b45b12.png)
 
-![image](https://user-images.githubusercontent.com/41357381/189773564-d2c8d291-0211-4b03-a094-f7fb96b37b64.png)
+![image](https://user-images.githubusercontent.com/41357381/190263784-2a99659f-d99f-43be-a58c-dbd0112bb345.png)
 
 ![image](https://user-images.githubusercontent.com/41357381/188517696-eb502272-6ebe-4e9c-9e0f-4264d6447651.png)
 
@@ -41,6 +41,6 @@
 
 ![image](https://user-images.githubusercontent.com/41357381/188517835-5a8fe9d9-28fe-4b88-8c4c-12a13cb02e7f.png)
 
-![image](https://user-images.githubusercontent.com/41357381/189779207-9c24e520-8c3c-41d9-ae06-de2f484eda82.png)
+![image](https://user-images.githubusercontent.com/41357381/190263988-796443a8-9779-43b8-89af-77637d1cb3cd.png)
 
-![image](https://user-images.githubusercontent.com/41357381/189779244-73504172-88b9-41d4-9a66-4a3d441d64a6.png)
+![image](https://user-images.githubusercontent.com/41357381/190264053-be0dab30-5691-4496-9be2-cf40d427c337.png)
