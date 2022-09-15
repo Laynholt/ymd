@@ -16,6 +16,7 @@ limitations under the License.
 
 NUMBER_OF_WORKERS = 5
 CHUNK_OF_TRACKS = 20
+LOGGER_DEBUG_MODE = True
 
 paths = {'stuff': 'stuff'}
 paths = {
@@ -26,10 +27,10 @@ paths = {
     },
 
     'files': {
-        'history': 'history.db',
+        'history': f'{paths["stuff"]}/history.db',
         'default_playlist_cover': f'{paths["stuff"]}/default_playlist_cover.jpg',
         'icon': f'{paths["stuff"]}/icon.ico',
-        'log': 'logging.log'
+        'log': f'{paths["stuff"]}/logging.log'
     }
 }
 

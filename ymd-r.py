@@ -16,7 +16,7 @@ limitations under the License.
 
 import tkinter
 from tkinter import messagebox, filedialog, Menu
-from tkinter.ttk import Combobox, Checkbutton, Progressbar, LabelFrame
+from tkinter.ttk import Combobox, Checkbutton, Progressbar, LabelFrame, Button, Entry, Label, Scrollbar
 
 import re
 import os
@@ -30,7 +30,6 @@ from queue import Queue, Empty
 from PIL import Image, ImageTk
 
 import time
-import ahocorasick
 
 from mutagen import File
 from mutagen.id3 import TIT2, TPE1, TALB, APIC, TDRC, TRCK, TPOS, TPE2, TCON, USLT
@@ -50,6 +49,7 @@ logger = logging.getLogger(__name__)
 def setup_logger(logger_type: int):
     logger.setLevel(logger_type)
 
+    os.makedirs(config.paths['dirs']['stuff'], exist_ok=True)
     if os.path.exists(config.paths['files']['log']):
         os.remove(config.paths['files']['log'])
 
@@ -121,7 +121,7 @@ class YandexMusicDownloader:
                 logger.error(f'Не удалось открыть файл [{config_filename}] для чтения!')
 
         configuration_window = tkinter.Tk()
-        configuration_window.geometry('550x255')
+        configuration_window.geometry('550x280')
         try:
             configuration_window.iconbitmap(config.paths["files"]["icon"])
         except tkinter.TclError:
@@ -130,13 +130,29 @@ class YandexMusicDownloader:
         configuration_window.title('Yandex Music Downloader Configuration')
         configuration_window.resizable(width=False, height=False)
 
+        menu_main = Menu(configuration_window)
+        configuration_window.config(menu=menu_main)
+
+        menu_additional = Menu(menu_main, tearoff=0)
+        is_logger_mode_debug = tkinter.BooleanVar()
+        is_logger_mode_debug.set(config.LOGGER_DEBUG_MODE)
+        menu_additional.add_checkbutton(label='Логгер в режиме дебага', onvalue=1, offvalue=0,
+                                        variable=is_logger_mode_debug)
+        menu_main.add_cascade(label='Дополнительно', menu=menu_additional)
+
+        def _set_logger_level():
+            if is_logger_mode_debug.get():
+                logger.setLevel(logging.DEBUG)
+            else:
+                logger.setLevel(logging.ERROR)
+
         labelframe_required = LabelFrame(configuration_window, text='Обязательное заполнение')
         labelframe_required.grid(column=0, row=0, columnspan=5, rowspan=3, padx=10, pady=10)
 
-        label_enter_token = tkinter.Label(labelframe_required, text='Введите токен:')
+        label_enter_token = Label(labelframe_required, text='Введите токен:')
         label_enter_token.grid(column=0, row=0, padx=5, pady=5)
 
-        entry_enter_token = tkinter.Entry(labelframe_required, width=68, show="*")
+        entry_enter_token = Entry(labelframe_required, width=68, show="*")
         entry_enter_token.delete(0, tkinter.END)
         if len(self.token):
             entry_enter_token.insert(0, self.token)
@@ -148,12 +164,11 @@ class YandexMusicDownloader:
 
         check_state_entry = tkinter.BooleanVar()
         check_state_entry.set(True)
-        checkbutton_entry_password = tkinter.Checkbutton(labelframe_required, text='Скрыть токен',
-                                                         var=check_state_entry,
-                                                         command=_change_entry_show_mode)
+        checkbutton_entry_password = Checkbutton(labelframe_required, text='Скрыть токен', var=check_state_entry,
+                                                 command=_change_entry_show_mode)
         checkbutton_entry_password.grid(column=1, row=1, padx=5, pady=5)
 
-        label_login_password = tkinter.Label(labelframe_required, text='Либо авторизуйтесь через логин и пароль:')
+        label_login_password = Label(labelframe_required, text='Либо авторизуйтесь через логин и пароль:')
         label_login_password.grid(column=0, row=2, columnspan=2, padx=5, pady=5)
 
         # Обработчик гиперссылки
@@ -184,21 +199,21 @@ class YandexMusicDownloader:
                                                          ' доступен по ссылке на github:', width=60)
             label_info.grid(column=0, row=0, columnspan=3, rowspan=4, padx=15, pady=5)
 
-            label_github = tkinter.Label(auth_window, text=f'{config.__github__}', fg='blue', cursor='hand2')
-            label_github.grid(column=1, row=4, sticky=tkinter.W, padx=15, pady=5)
+            label_github = tkinter.Label(auth_window, text=f'{config.__github__}', foreground='blue', cursor='hand2')
+            label_github.grid(column=0, row=4, columnspan=3, sticky=tkinter.EW, padx=5, pady=5)
             label_github.bind('<Button-1>', lambda e: _callback(config.__github__))
 
-            label_login = tkinter.Label(auth_window, text='Логин:')
+            label_login = tkinter.Label(auth_window, text='Логин:', width=15, anchor='e')
             label_login.grid(column=0, row=5, sticky=tkinter.E, padx=5, pady=5)
 
-            entry_login = tkinter.Entry(auth_window, width=25)
-            entry_login.grid(column=1, row=5, padx=5, pady=5)
+            entry_login = Entry(auth_window, width=25)
+            entry_login.grid(column=1, row=5, sticky=tkinter.W, padx=5, pady=5)
 
-            label_password = tkinter.Label(auth_window, text='Пароль:')
+            label_password = tkinter.Label(auth_window, text='Пароль:', width=15, anchor='e')
             label_password.grid(column=0, row=6, sticky=tkinter.E, padx=5, pady=5)
 
-            entry_password = tkinter.Entry(auth_window, width=25, show="*")
-            entry_password.grid(column=1, row=6, padx=5, pady=5)
+            entry_password = Entry(auth_window, width=25, show="*")
+            entry_password.grid(column=1, row=6, sticky=tkinter.W, padx=5, pady=5)
 
             def _change_entry_show_mode1():
                 show_mode = "*" if check_state_entry1.get() else ""
@@ -206,12 +221,13 @@ class YandexMusicDownloader:
 
             check_state_entry1 = tkinter.BooleanVar()
             check_state_entry1.set(True)
-            checkbutton_entry_password1 = tkinter.Checkbutton(auth_window, text='Скрыть пароль',
-                                                              var=check_state_entry1,
-                                                              command=_change_entry_show_mode1)
-            checkbutton_entry_password1.grid(column=1, row=7, padx=5, pady=5)
+            checkbutton_entry_password1 = Checkbutton(auth_window, text='Скрыть пароль',
+                                                      var=check_state_entry1,
+                                                      command=_change_entry_show_mode1)
+            checkbutton_entry_password1.grid(column=1, row=7, sticky=tkinter.W, padx=5, pady=5)
 
             def _auth():
+                _set_logger_level()
 
                 login = entry_login.get()
                 if login == '':
@@ -243,13 +259,13 @@ class YandexMusicDownloader:
 
                 auth_window.destroy()
 
-            button_auth = tkinter.Button(auth_window, text='Войти', command=_auth, width=20)
-            button_auth.grid(column=1, row=8, padx=5, pady=5)
+            button_auth = Button(auth_window, text='Войти', command=_auth, width=25)
+            button_auth.grid(column=1, row=8, sticky=tkinter.W, padx=5, pady=5)
 
-        button_login_password = tkinter.Button(labelframe_required, text='Авторизоваться', command=_authorization)
+        button_login_password = Button(labelframe_required, text='Авторизоваться', command=_authorization)
         button_login_password.grid(column=2, row=2, padx=5, pady=5)
 
-        label_how_get_token = tkinter.Label(labelframe_required, text='Как получить токен?', fg='blue', cursor='hand2')
+        label_how_get_token = Label(labelframe_required, text='Как получить токен?', foreground='blue', cursor='hand2')
         label_how_get_token.grid(column=4, row=1, sticky=tkinter.E, padx=5, pady=5)
 
         label_how_get_token.bind('<Button-1>', lambda e: _callback("https://github.com/MarshalX/yandex-music-api/"
@@ -266,9 +282,10 @@ class YandexMusicDownloader:
             )
             if database != "":
                 self.history_database_path = os.path.abspath(database)
+            _set_logger_level()
             logger.debug(f'Файл базы данных установлен на: [{self.history_database_path}].')
 
-        button_history = tkinter.Button(labelframe_optional, text='Указать БД', command=_choose_database)
+        button_history = Button(labelframe_optional, text='Указать БД', command=_choose_database)
         button_history.grid(column=0, row=3, padx=5, pady=5)
 
         # Выбираем папку, куда качать
@@ -276,9 +293,10 @@ class YandexMusicDownloader:
             folder = filedialog.askdirectory(title="Выберете папку Загрузки")
             if folder != "":
                 self.download_folder_path = os.path.abspath(folder)
+            _set_logger_level()
             logger.debug(f'Папка загрузки установлена на: [{self.download_folder_path}].')
 
-        button_download = tkinter.Button(labelframe_optional, text='Указать папку Download', command=_choose_download)
+        button_download = Button(labelframe_optional, text='Указать папку Download', command=_choose_download)
         button_download.grid(column=1, row=3, padx=5, pady=5)
 
         check_is_rewritable = tkinter.BooleanVar()
@@ -293,12 +311,13 @@ class YandexMusicDownloader:
             entry_enter_token.delete(0, tkinter.END)
             self.history_database_path = config.paths['files']['history']
             self.download_folder_path = config.paths['dirs']['download']
+            _set_logger_level()
             logger.debug(f'Токен установлен в [{self.token}].')
             logger.debug(f'Путь к файлу базы данных установлен в [{self.history_database_path}].')
             logger.debug(f'Путь к папке Загрузки установлен в [{self.download_folder_path}].')
             check_is_rewritable.set(self.is_rewritable)
 
-        button_reset = tkinter.Button(configuration_window, text='Сбросить всё', command=_reset_all)
+        button_reset = Button(configuration_window, text='Сбросить всё', command=_reset_all)
         button_reset.grid(column=0, row=5, padx=10, pady=5, sticky=tkinter.W)
 
         is_continue = False
@@ -311,6 +330,7 @@ class YandexMusicDownloader:
             self.token = entry_enter_token.get()
             self.is_rewritable = check_is_rewritable.get()
 
+            _set_logger_level()
             try:
                 with open(config_filename, 'w', encoding='utf-8') as config_file1:
                     data1 = {
@@ -328,7 +348,7 @@ class YandexMusicDownloader:
             is_continue = True
             configuration_window.destroy()
 
-        button_continue = tkinter.Button(configuration_window, text='Продолжить', command=_continue_action)
+        button_continue = Button(configuration_window, text='Продолжить', command=_continue_action)
         button_continue.grid(column=4, row=5, padx=10, pady=5, sticky=tkinter.E)
 
         configuration_window.mainloop()
@@ -381,7 +401,8 @@ class YandexMusicDownloader:
                                                            f'Репозиторий:', width=33)
             label_about.grid(column=0, row=0, padx=5, pady=5, sticky=tkinter.EW)
 
-            label_git = tkinter.Label(about_window, text=f'https://github.com/Laynholt/ymd', fg='blue', cursor='hand2',
+            label_git = tkinter.Label(about_window, text=f'https://github.com/Laynholt/ymd', foreground='blue',
+                                      cursor='hand2',
                                       width=33)
             label_git.grid(column=0, row=1, padx=5, sticky=tkinter.EW)
 
@@ -426,10 +447,10 @@ class YandexMusicDownloader:
         self.menu_main.add_cascade(label='Справка', menu=self.menu_help)
 
         current_playlist_cover = ImageTk.PhotoImage(Image.open(config.paths['files']['default_playlist_cover']))
-        self.label_playlist_cover = tkinter.Label(self.main_window, image=current_playlist_cover)
+        self.label_playlist_cover = Label(self.main_window, image=current_playlist_cover)
         self.label_playlist_cover.grid(column=0, row=0, rowspan=3, sticky=tkinter.W, padx=15, pady=5)
 
-        self.label_playlist_names = tkinter.Label(self.main_window, text='Выберете плейлист для скачивания:')
+        self.label_playlist_names = Label(self.main_window, text='Выберете плейлист для скачивания:')
         self.label_playlist_names.grid(column=1, row=0, columnspan=2, sticky=tkinter.W, pady=5)
 
         # Реагируем на изменения в комбобоксе и вызываем метод отбновления обложки
@@ -443,7 +464,7 @@ class YandexMusicDownloader:
         self.combo_playlists['state'] = 'readonly'
         self.combo_playlists.grid(column=1, row=1, columnspan=2, sticky=tkinter.W)
 
-        self.label_track_number_text = tkinter.Label(self.main_window, text='Количество треков в плейлисте:')
+        self.label_track_number_text = Label(self.main_window, text='Количество треков в плейлисте:')
         self.label_track_number_text.grid(column=1, row=2, columnspan=2, sticky=tkinter.W, pady=5)
 
         self.check_state_history = tkinter.BooleanVar()
@@ -452,8 +473,8 @@ class YandexMusicDownloader:
                                          var=self.check_state_history)
         self.check_history.grid(column=0, row=3, columnspan=3, sticky=tkinter.W, padx=10)
 
-        self.button_download = tkinter.Button(self.main_window, width=15, text='Скачать',
-                                              command=lambda: self._wrapper_download_or_update_tracks())
+        self.button_download = Button(self.main_window, width=15, text='Скачать',
+                                      command=lambda: self._wrapper_download_or_update_tracks())
         self.button_download.grid(column=3, row=3)
 
         # Изменяем правило, при закрытие окна
@@ -528,10 +549,6 @@ class YandexMusicDownloader:
 
         partial_window.protocol("WM_DELETE_WINDOW", _close_window)
 
-        # Код загрузки данных Имя исполнителя - Название композиции в списко, для дальнейшего сравнивания
-        # Для варианта с pyahocorasick
-
-        # auto = ahocorasick.Automaton()
         tracks_names = []
 
         def _get_tracks_info(tracks: list, is_short_tracks: bool = True) -> tuple:
@@ -566,7 +583,7 @@ class YandexMusicDownloader:
         thread = threading.Thread(target=_load_tracks_names)
         thread.start()
 
-        label_search = tkinter.Label(partial_window, text='Поиск:')
+        label_search = Label(partial_window, text='Поиск:')
         label_search.grid(column=0, row=0, sticky=tkinter.E, padx=10, pady=10)
 
         def _show_same_tracks_names(pattern: str):
@@ -577,22 +594,6 @@ class YandexMusicDownloader:
             """
             logger.debug(f'Начинаю поиск сходства по шаблону [{pattern}].')
             track_list = []
-
-            # Альтернативный вариант поиска подстроки через pyahocorasick
-            # По времени +- одинаково с in вышло на примере плейлиста с 1500 композиций
-
-            # auto.add_word(pattern.lower(), pattern.lower())
-            # auto.make_automaton()
-            #
-            # for track_name in tracks_names:
-            #     for end_ind, found in auto.iter(track_name.lower()):
-            #         track_list.append(track_name)
-            #
-            # track_list.sort()
-            # for track_name in track_list:
-            #     listbox_pattern_tracks.insert(tkinter.END, track_name)
-            #
-            # auto.remove_word(pattern)
 
             tracks_info = _get_tracks_info(current_playlist.tracks)
             for track_name, track_artists, track_title, track_id, _ in tracks_info:
@@ -621,16 +622,16 @@ class YandexMusicDownloader:
         entry_string_variable = tkinter.StringVar()
         entry_string_variable.trace_add("write",
                                         lambda name, index, mode, sv=entry_string_variable: _entry_callback(sv))
-        entry_search_track = tkinter.Entry(partial_window, width=40, textvariable=entry_string_variable)
+        entry_search_track = Entry(partial_window, width=40, textvariable=entry_string_variable)
         entry_search_track.grid(column=1, row=0, columnspan=2, sticky=tkinter.EW, padx=10, pady=10)
 
-        frame = tkinter.Frame(partial_window, bd=1, relief="sunken", background="white")
+        frame = tkinter.Frame(partial_window, borderwidth=1, relief="sunken", background="white")
         frame.grid(column=0, row=1, columnspan=3, padx=10, pady=10)
 
-        scrollbar_vertical = tkinter.Scrollbar(frame)
+        scrollbar_vertical = Scrollbar(frame)
         scrollbar_vertical.grid(column=2, row=0, sticky=tkinter.NS)
 
-        scrollbar_horizontal = tkinter.Scrollbar(frame, orient="horizontal")
+        scrollbar_horizontal = Scrollbar(frame, orient="horizontal")
         scrollbar_horizontal.grid(column=0, row=1, columnspan=2, sticky=tkinter.EW)
 
         listbox_same_tracks = tkinter.Listbox(frame, width=80, selectmode="multiple",
@@ -720,13 +721,13 @@ class YandexMusicDownloader:
             show_window.title(f'Список для [{playlist.title}]')
             show_window.resizable(width=False, height=False)
 
-            _frame = tkinter.Frame(show_window, bd=1, relief="sunken", background="white")
+            _frame = tkinter.Frame(show_window, borderwidth=1, relief="sunken", background="white")
             _frame.grid(column=0, row=1, columnspan=3, padx=10, pady=10)
 
-            _scrollbar_vertical = tkinter.Scrollbar(_frame)
+            _scrollbar_vertical = Scrollbar(_frame)
             _scrollbar_vertical.grid(column=2, row=0, sticky=tkinter.NS)
 
-            _scrollbar_horizontal = tkinter.Scrollbar(_frame, orient="horizontal")
+            _scrollbar_horizontal = Scrollbar(_frame, orient="horizontal")
             _scrollbar_horizontal.grid(column=0, row=1, columnspan=2, sticky=tkinter.EW)
 
             listbox_tracks_in_list = tkinter.Listbox(_frame, width=80, selectmode="multiple",
@@ -747,34 +748,34 @@ class YandexMusicDownloader:
             for track_name in track_list:
                 listbox_tracks_in_list.insert(tkinter.END, track_name)
 
-            label_count = tkinter.Label(show_window, text=f'В списке [{len(track_list)}] трека(ов).')
+            label_count = Label(show_window, text=f'В списке [{len(track_list)}] трека(ов).')
             label_count.grid(column=1, row=2)
 
-        label_results = tkinter.Label(partial_window, text=f'Найдено совпадений: {current_playlist.track_count}')
+        label_results = Label(partial_window, text=f'Найдено совпадений: {current_playlist.track_count}')
         label_results.grid(column=1, row=2, padx=10, pady=10)
 
-        button_clear_selected_tracks = tkinter.Button(partial_window, text='Отчистить выделеные', width=20,
-                                                      command=_clear_all_selected)
+        button_clear_selected_tracks = Button(partial_window, text='Отчистить выделеные', width=25,
+                                              command=_clear_all_selected)
         button_clear_selected_tracks.grid(column=0, row=2, padx=10, pady=10)
 
-        button_show_list = tkinter.Button(partial_window, text='Показать список', width=20, command=_show_list)
+        button_show_list = Button(partial_window, text='Показать список', width=25, command=_show_list)
         button_show_list.grid(column=2, row=2, padx=10, pady=10)
 
-        button_add_current_track = tkinter.Button(partial_window, text='Добавить в список', width=20,
-                                                  command=_add_to_list)
+        button_add_current_track = Button(partial_window, text='Добавить в список', width=25,
+                                          command=_add_to_list)
         button_add_current_track.grid(column=1, row=3, padx=10, pady=10)
 
-        button_remove_current_track = tkinter.Button(partial_window, text='Удалить из списока', width=20,
-                                                     command=_remove_from_list)
+        button_remove_current_track = Button(partial_window, text='Удалить из списока', width=25,
+                                             command=_remove_from_list)
         button_remove_current_track.grid(column=0, row=3, padx=10, pady=10)
 
         text = 'Скачать' if not update_mode else 'Обновить'
-        button_download_or_update_tracks = tkinter.Button(partial_window, text=f'{text}', width=20,
-                                                          command=lambda: self._wrapper_download_or_update_tracks(
-                                                              update_mode=update_mode,
-                                                              partial_mode=True,
-                                                              partial_playlist_index=current_playlist_index
-                                                          ))
+        button_download_or_update_tracks = Button(partial_window, text=f'{text}', width=25,
+                                                  command=lambda: self._wrapper_download_or_update_tracks(
+                                                      update_mode=update_mode,
+                                                      partial_mode=True,
+                                                      partial_playlist_index=current_playlist_index
+                                                  ))
         button_download_or_update_tracks['state'] = 'disable'
         button_download_or_update_tracks.grid(column=2, row=3, padx=10, pady=10)
 
@@ -993,7 +994,7 @@ class YandexMusicDownloader:
             progress_bar = Progressbar(child_window, orient='horizontal', mode='determinate', length=420)
             progress_bar.grid(column=0, row=0, columnspan=2, padx=10, pady=20)
 
-            label_value = tkinter.Label(child_window, text=f'Прогресс {info}: {0 / playlist.track_count} [0 %]')
+            label_value = Label(child_window, text=f'Прогресс {info}: {0 / playlist.track_count} [0 %]')
             label_value.grid(column=0, row=1, columnspan=2)
 
             # Код для закачки и обновления файлов
@@ -1209,18 +1210,21 @@ class YandexMusicDownloader:
                                                 f'Загружено [{self.downloading_or_updating_playlists[playlist.kind].analyzed_and_downloaded_tracks["d"]}] трека(ов).\n'
                                                 f'Не удалось загрузить [{self.downloading_or_updating_playlists[playlist.kind].analyzed_and_downloaded_tracks["e"]}] трека(ов).')
                         else:
-                            messagebox.showinfo('Инфо', f'В плейлисте\n[{current_playlist.title}]\nнет новых треков!\n\n'
-                                                        f'Если хотите скачать треки, то уберите галочку с пункта '
-                                                        f'"Скачать новые треки".\n\n'
-                                                        f'Если хотите, чтобы существующие треки были перезаписаны, '
-                                                        f'то поставьте соответствующую галочку в окне конфигурации '
-                                                        f'или в меню "Дополнительно".')
+                            messagebox.showinfo('Инфо',
+                                                f'В плейлисте\n[{current_playlist.title}]\nнет новых треков!\n\n'
+                                                f'Если хотите скачать треки, то уберите галочку с пункта '
+                                                f'"Скачать новые треки".\n\n'
+                                                f'Если хотите, чтобы существующие треки были перезаписаны, '
+                                                f'то поставьте соответствующую галочку в окне конфигурации '
+                                                f'или в меню "Дополнительно".')
             except IOError:
-                messagebox.showwarning('Предупреждение', f'Не удалось создать файл\n[{filename}]\nдля записи ошибок при '
-                                                         f'скачивании!')
+                messagebox.showwarning('Предупреждение',
+                                       f'Не удалось создать файл\n[{filename}]\nдля записи ошибок при '
+                                       f'скачивании!')
                 logger.error(f'Ошибка при попытке создания файла [{filename}] для записи ошибок при скачивании!')
 
-            info = "скачиваемых" if (not update_mode and not only_add_to_database and not update_liked) else "обновляемых"
+            info = "скачиваемых" if (
+                    not update_mode and not only_add_to_database and not update_liked) else "обновляемых"
             try:
                 del self.downloading_or_updating_playlists[playlist.kind]
                 logger.debug(f'Плейлист [{playlist_title}] был удалён из списка {info} плейлистов.')
@@ -1267,7 +1271,7 @@ class YandexMusicDownloader:
                 cur.execute(request)
 
     class DownloaderHelper:
-        def __init__(self, progress_bar: Progressbar, label_value: tkinter.Label, download_folder_path: str,
+        def __init__(self, progress_bar: Progressbar, label_value: Label, download_folder_path: str,
                      history_database_path: str, is_rewritable: bool, download_only_new: bool, filenames: dict,
                      playlist_title: str, number_tracks_in_playlist: int, liked_tracks: TracksList,
                      add_track_id_to_name: bool, main_thread_state, child_thread_state, update_mode, update_liked,
@@ -1458,7 +1462,8 @@ class YandexMusicDownloader:
                         was_track_downloaded = True
                         break
                     except (YandexMusicError, TimeoutError):
-                        logger.debug(f'Не удалось скачать трек [{track_name}] с кодеком [{codec}] и битрейтом [{bitrate}].')
+                        logger.debug(
+                            f'Не удалось скачать трек [{track_name}] с кодеком [{codec}] и битрейтом [{bitrate}].')
                         continue
 
                 if not was_track_downloaded:
@@ -1831,8 +1836,7 @@ class YandexMusicDownloader:
 
 
 def main():
-    # Если хотите чтобы логгер показывал только ошибки, то вместо DEBUG поставьте ERROR
-    setup_logger(logging.DEBUG)
+    setup_logger(logging.DEBUG if config.LOGGER_DEBUG_MODE else logging.ERROR)
     downloader = YandexMusicDownloader()
     downloader.start()
 
