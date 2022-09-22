@@ -30,7 +30,8 @@ paths = {
         'history': f'{paths["stuff"]}/history.db',
         'default_playlist_cover': f'{paths["stuff"]}/default_playlist_cover.jpg',
         'icon': f'{paths["stuff"]}/icon.ico',
-        'log': f'{paths["stuff"]}/logging.log'
+        'log': f'{paths["stuff"]}/logging.log',
+        'config': f'{paths["stuff"]}/config.ini'
     }
 }
 

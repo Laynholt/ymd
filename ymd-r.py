@@ -87,6 +87,8 @@ class YandexMusicDownloader:
                 self._run_main_window()
         except NetworkError:
             messagebox.showerror('Ошибка', 'Не удалось подключиться к Yandex!\n\nПопробуйте позже.')
+        except RuntimeError:
+            pass
 
     def _run_configuration_window(self) -> bool:
         """
@@ -94,7 +96,7 @@ class YandexMusicDownloader:
         :return:
         """
         # Начальная инициализация основных полей
-        config_filename = 'config.ini'
+        config_filename = config.paths['files']['config']
         self.token = ''
         self.history_database_path = config.paths['files']['history']
         self.download_folder_path = config.paths['dirs']['download']
@@ -109,9 +111,9 @@ class YandexMusicDownloader:
                         self.token = data['token']
                         logger.debug(f'Из файла [{config_filename}] был получен токен: [{self.token}]')
                         self.history_database_path = data['history']
-                        logger.debug(f'Из файла [{config_filename}] был получен токен: [{self.history_database_path}]')
+                        logger.debug(f'Из файла [{config_filename}] был получен путь в базе данных: [{self.history_database_path}]')
                         self.download_folder_path = data['download']
-                        logger.debug(f'Из файла [{config_filename}] был получен токен: [{self.download_folder_path}]')
+                        logger.debug(f'Из файла [{config_filename}] был получен путь к папке загрузок: [{self.download_folder_path}]')
                     except json.decoder.JSONDecodeError:
                         logger.error(f'Ошибка при разборе файла [{config_filename}]!')
                     except KeyError:
@@ -241,6 +243,11 @@ class YandexMusicDownloader:
                 ys = YandexSession(login=login, password=password)
                 loop = asyncio.get_event_loop()
                 response = loop.run_until_complete(ys.get_music_token())
+
+                # Слип для закрытия соединения
+                # https://docs.aiohttp.org/en/stable/client_advanced.html#graceful-shutdown
+                loop.run_until_complete(asyncio.sleep(1))
+                loop.close()
 
                 if response.get_error() is not None:
                     messagebox.showerror('Ошибка', f'{response.get_error()}')

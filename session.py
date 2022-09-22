@@ -23,6 +23,7 @@ limitations under the License.
 """
 
 import re
+import asyncio
 from aiohttp import ClientSession, ClientConnectorError
 
 
@@ -109,7 +110,8 @@ class YandexSession:
             return
 
         if "redirect_url" in resp:
-            self.login_response.set_error("Редирект не поддерживается!")
+            self.login_response.set_error("Редирект не поддерживается!\n\n"
+                                          "Попробуйте позже, либо самостоятельно введите токен.")
             return
 
         # x_token
